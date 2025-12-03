@@ -15,38 +15,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thediymaker/slurm-history-ingestor/internal/config"
 	"github.com/thediymaker/slurm-history-ingestor/internal/db"
-	slurm "github.com/ubccr/slurmrest"
 )
 
 type Ingestor struct {
 	cfg    *config.Config
 	db     *db.Queries
 	pool   *pgxpool.Pool
-	client *slurm.APIClient
+	client *http.Client
 }
 
 func New(cfg *config.Config, pool *pgxpool.Pool) (*Ingestor, error) {
-	slurmCfg := slurm.NewConfiguration()
-
-	// Handle URL scheme and host
-	if strings.HasPrefix(cfg.SlurmURL, "https://") {
-		slurmCfg.Scheme = "https"
-		slurmCfg.Host = strings.TrimPrefix(cfg.SlurmURL, "https://")
-	} else {
-		slurmCfg.Scheme = "http"
-		slurmCfg.Host = strings.TrimPrefix(cfg.SlurmURL, "http://")
+	// Create a standard HTTP client
+	c := &http.Client{
+		Timeout: 30 * time.Second,
 	}
-	// Remove trailing slash if present
-	slurmCfg.Host = strings.TrimSuffix(slurmCfg.Host, "/")
-
-	if cfg.SlurmUser != "" {
-		slurmCfg.AddDefaultHeader("X-SLURM-USER-NAME", cfg.SlurmUser)
-	}
-	if cfg.SlurmToken != "" {
-		slurmCfg.AddDefaultHeader("X-SLURM-USER-TOKEN", cfg.SlurmToken)
-	}
-
-	c := slurm.NewAPIClient(slurmCfg)
 
 	return &Ingestor{
 		cfg:    cfg,
@@ -516,17 +498,11 @@ func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob
 		req.Header.Set("X-SLURM-USER-TOKEN", i.cfg.SlurmToken)
 	}
 
-	// Use the client from the generated client config if possible, or default http client
-	httpClient := i.client.GetConfig().HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-
 	if i.cfg.Debug {
 		log.Printf("Debug: Fetching raw jobs from %s", u.String())
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := i.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request error: %w", err)
 	}

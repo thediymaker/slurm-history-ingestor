@@ -7,7 +7,6 @@ if not exist "internal\db" mkdir "internal\db"
 %USERPROFILE%\go\bin\sqlc generate || sqlc generate
 
 echo Initializing Go module...
-go get github.com/ubccr/slurmrest@latest
 go mod tidy
 
 echo.
