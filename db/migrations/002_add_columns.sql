@@ -1,0 +1,6 @@
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS tres_req_str TEXT;
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS array_job_id INTEGER;
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS array_task_id INTEGER;
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS group_name TEXT;
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS eligible_time BIGINT;
+ALTER TABLE job_history ADD COLUMN IF NOT EXISTS timelimit_minutes BIGINT;

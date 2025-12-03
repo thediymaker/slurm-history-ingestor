@@ -60,6 +60,24 @@ CREATE TABLE job_history (
     run_time_seconds BIGINT,   -- end - start
     core_hours NUMERIC(12, 2), -- (run_time * req_cpus) / 3600
     
+    -- Extra Fields
+    job_name TEXT,
+    tres_alloc_str TEXT,
+    tres_req_str TEXT,
+
+    -- Array Job Info
+    array_job_id BIGINT,
+    array_task_id INT,
+
+    -- User/Group Info
+    group_name TEXT,
+    
+    -- Additional Timestamps
+    eligible_time TIMESTAMP WITH TIME ZONE,
+
+    -- Limits
+    timelimit_minutes BIGINT,
+
     PRIMARY KEY (job_id, cluster, submit_time)
 );
 
