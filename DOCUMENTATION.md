@@ -1,26 +1,53 @@
 # Slurm History Ingestor
 
 ## Overview
-The **Slurm History Ingestor** is a standalone Go service designed to bridge the gap between a Slurm High Performance Computing (HPC) cluster and long-term analytics. It continuously ingests job history from the Slurm REST API and stores it in a PostgreSQL database.
+
+The **Slurm History Ingestor** is a standalone Go service that syncs job history from a Slurm HPC cluster's REST API into PostgreSQL for analytics and reporting.
 
 **Key Features:**
-*   **Incremental Syncing:** Automatically detects the last synced job and only fetches new data, ensuring efficiency.
-*   **Robust Data Handling:** Uses a "lookback" window to catch jobs that may have finished out-of-order or during downtime.
-*   **Data Normalization:** Converts complex Slurm data structures (like TRES strings and time limits) into query-friendly SQL columns (e.g., `core_hours`, `wait_time_seconds`).
-*   **Multi-Cluster Support:** Can tag records with a `CLUSTER_NAME`, allowing multiple ingestors to feed into a single central database.
+- **Incremental Syncing** - Only fetches new jobs since last sync
+- **Robust Data Handling** - Uses lookback window to catch out-of-order jobs
+- **Data Normalization** - Converts TRES strings to query-friendly columns
+- **Multi-Cluster Support** - Tag records with cluster name for centralized databases
+
+---
 
 ## Prerequisites
-Before setting up the ingestor, ensure you have the following:
-1.  **Slurm Cluster**: Access to a Slurm cluster with the **Slurm REST API** (slurmrestd) enabled and accessible.
-    *   *Note: This tool is optimized for Slurm REST API v0.0.41.*
-2.  **PostgreSQL Database**: A Postgres instance (v13+) to store the history.
-3.  **Go Runtime**: Go 1.22 or higher (if building from source).
 
-## Installation & Setup
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| PostgreSQL | 13+ | Database storage |
+| Slurm | 20.11+ | With slurmrestd enabled (API v0.0.41) |
+| Go | 1.22+ | Only if building from source |
+| psql | - | PostgreSQL client for running migrations |
 
-### Quick Start (Recommended)
+### Installing Required Packages
 
-The easiest way to set up the ingestor is using the interactive setup script:
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install -y postgresql-client
+```
+
+**RHEL/Rocky/AlmaLinux:**
+```bash
+sudo dnf install -y postgresql
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S postgresql-libs
+```
+
+*Note: You only need the PostgreSQL **client** (psql) on the machine running the ingestor. The PostgreSQL **server** can be on a different machine.*
+
+---
+
+## Quick Start
+
+Choose **one** of the following installation methods:
+
+### Option A: Setup Script (Recommended for First-Time Setup)
 
 ```bash
 git clone https://github.com/thediymaker/slurm-history-ingestor.git
@@ -29,29 +56,93 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-The setup script will:
-1. Prompt for your database connection details
-2. Prompt for Slurm API configuration  
-3. Auto-generate your `.env` file
-4. Optionally run database migrations
-5. Build the binary
+The script will interactively prompt for all configuration and optionally run database migrations.
 
-### Manual Setup
+---
 
-If you prefer to set things up manually:
+### Option B: Docker (Recommended for Production)
 
-#### 1. Database Setup
-The ingestor requires a specific schema to operate. Run the migration files located in `db/migrations/` against your PostgreSQL database.
-
+**Step 1: Clone and configure**
 ```bash
-# Create the database
-createdb slurm_history
-
-# Apply migrations
-psql -d slurm_history -f db/migrations/001_init.sql
+git clone https://github.com/thediymaker/slurm-history-ingestor.git
+cd slurm-history-ingestor
+cp .env.example .env
 ```
 
-#### 2. Build the Application
+**Step 2: Edit `.env` with your values**
+```bash
+nano .env  # or use your preferred editor
+```
+
+**Step 3: Run database migrations**
+
+You must create the database tables before starting the ingestor. Choose based on your setup:
+
+*If using an existing PostgreSQL server:*
+```bash
+psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f db/migrations/001_init.sql
+```
+
+*If using Docker Compose with bundled PostgreSQL (uncomment postgres service in docker-compose.yml first):*
+```bash
+# Start just the database first
+docker compose up -d postgres
+
+# Wait a few seconds for it to initialize, then run migrations
+docker compose exec postgres psql -U slurm_user -d slurm_history -f /docker-entrypoint-initdb.d/001_init.sql
+```
+
+**Step 4: Start the ingestor**
+```bash
+docker compose up -d ingestor
+```
+
+**Step 5: View logs**
+```bash
+docker compose logs -f ingestor
+```
+
+---
+
+### Option C: Pre-built Binary (No Build Required)
+
+**Step 1: Download the binary**
+
+Download the latest release from [GitHub Releases](https://github.com/thediymaker/slurm-history-ingestor/releases).
+
+```bash
+# Example for Linux x64
+wget https://github.com/thediymaker/slurm-history-ingestor/releases/latest/download/slurm-ingestor-linux-amd64
+chmod +x slurm-ingestor-linux-amd64
+mv slurm-ingestor-linux-amd64 slurm-ingestor
+```
+
+**Step 2: Run database migrations**
+```bash
+# Download the migration file
+wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/db/migrations/001_init.sql
+
+# Apply to your database
+psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f 001_init.sql
+```
+
+**Step 3: Configure environment**
+```bash
+# Download the example config
+wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/.env.example -O .env
+
+# Edit with your values
+nano .env
+```
+
+**Step 4: Run the ingestor**
+```bash
+./slurm-ingestor
+```
+
+---
+
+### Option D: Build from Source
 
 ```bash
 git clone https://github.com/thediymaker/slurm-history-ingestor.git
@@ -61,143 +152,110 @@ cd slurm-history-ingestor
 go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 sqlc generate
 
-# Install dependencies
+# Build
 go mod tidy
-
-# Build the binary
 go build -o slurm-ingestor cmd/ingest/main.go
-```
 
-#### 3. Configure Environment
+# Run migrations
+psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f db/migrations/001_init.sql
 
-```bash
+# Configure and run
 cp .env.example .env
-# Edit .env with your values
-```
-
-## Configuration
-The application is configured entirely via environment variables. You can set these in your shell, in a systemd unit file, or use a `.env` file in the working directory.
-
-### Required Configuration
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `DATABASE_URL` | PostgreSQL connection string. | `postgres://user:password@localhost:5432/slurm_dashboard?sslmode=disable` |
-| `SLURM_SERVER` | The base URL of your Slurm REST API. | `http://localhost:6820` |
-| `SLURM_API_ACCOUNT` | The Slurm user account to authenticate as. | `slurm` |
-| `SLURM_API_TOKEN` | The Slurm JWT token for authentication. | *(Empty)* |
-| `CLUSTER_NAME` | A unique identifier for this cluster (useful for multi-cluster setups). | `mycluster` |
-
-### Optional Configuration
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `SYNC_INTERVAL` | How often (in seconds) to check for new jobs. | `300` (5 minutes) |
-| `SLURM_API_VERSION` | Slurm REST API version. | `v0.0.41` |
-| `INITIAL_SYNC_DATE` | How far back to sync on first run (YYYY-MM-DD format). | `2024-01-01` |
-| `DEBUG` | Enable verbose logging for troubleshooting. | `false` |
-
-## Storage Requirements
-
-The job history table stores approximately **500 bytes per job record**. Plan your PostgreSQL storage accordingly:
-
-| Jobs | Storage Required | Notes |
-|------|------------------|-------|
-| 100,000 | ~50 MB | Small cluster or short history |
-| 1 million | ~500 MB | Medium cluster, 1-2 years |
-| 10 million | ~5 GB | Large cluster or long history |
-| 100 million | ~50 GB | Very large HPC environment |
-
-**Recommendations:**
-- Use a dedicated PostgreSQL server for production workloads over 1 million jobs
-- Enable PostgreSQL compression (`toast.compress`) for text fields
-- Consider partitioning the `job_history` table by `submit_time` for very large datasets
-- Set up regular `VACUUM` and `ANALYZE` jobs for query performance
-
-## Deployment
-
-### Option 1: Systemd Service (Recommended)
-Since the ingestor is a long-running daemon that sleeps and wakes up to sync data, the standard way to run it on Linux is using Systemd.
-
-1.  **Install the binary:**
-    ```bash
-    sudo cp slurm-ingestor /usr/local/bin/
-    sudo chmod +x /usr/local/bin/slurm-ingestor
-    ```
-
-2.  **Create a service file** at `/etc/systemd/system/slurm-ingestor.service`:
-    ```ini
-    [Unit]
-    Description=Slurm History Ingestor
-    After=network.target postgresql.service
-
-    [Service]
-    Type=simple
-    User=slurm
-    Group=slurm
-    ExecStart=/usr/local/bin/slurm-ingestor
-    Restart=on-failure
-    RestartSec=10
-    
-    # Configuration
-    Environment="DATABASE_URL=postgres://admin:securepass@db-host:5432/slurm_history"
-    Environment="SLURM_SERVER=http://slurm-head-node:6820"
-    Environment="SLURM_API_ACCOUNT=slurm_monitor"
-    Environment="SLURM_API_TOKEN=your-token-here"
-    Environment="CLUSTER_NAME=production-hpc"
-    Environment="SYNC_INTERVAL=300"
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-
-3.  **Enable and Start:**
-    ```bash
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now slurm-ingestor
-    ```
-
-4.  **Check Status:**
-    ```bash
-    systemctl status slurm-ingestor
-    journalctl -u slurm-ingestor -f
-    ```
-
-### Option 2: Docker (Recommended for Containerized Environments)
-
-Docker provides an easy way to deploy the ingestor without managing dependencies.
-
-1.  **Configure environment:**
-    ```bash
-    cp .env.example .env
-    # Edit .env with your values
-    ```
-
-2.  **Build and run:**
-    ```bash
-    docker compose up -d
-    ```
-
-3.  **View logs:**
-    ```bash
-    docker compose logs -f ingestor
-    ```
-
-4.  **Stop:**
-    ```bash
-    docker compose down
-    ```
-
-**Note:** The included `docker-compose.yml` has an optional PostgreSQL service for testing. For production, comment out the postgres service and configure `DATABASE_URL` to point to your existing database.
-
-### Option 3: Manual / Testing
-You can run the binary manually for testing:
-```bash
+nano .env
 ./slurm-ingestor
 ```
 
+---
+
+## Configuration Reference
+
+All configuration is via environment variables or a `.env` file.
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@localhost:5432/slurm_history?sslmode=disable` |
+| `SLURM_SERVER` | Slurm REST API URL | `http://slurm-head:6820` |
+| `SLURM_API_ACCOUNT` | Slurm user for API auth | `slurm` |
+| `SLURM_API_TOKEN` | JWT token for auth | `eyJ...` |
+| `CLUSTER_NAME` | Unique cluster identifier | `production-hpc` |
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYNC_INTERVAL` | `300` | Seconds between syncs |
+| `SLURM_API_VERSION` | `v0.0.41` | Slurm REST API version |
+| `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD) |
+| `DEBUG` | `false` | Enable verbose logging |
+
+---
+
+## Running as a Systemd Service
+
+For production deployments, run as a systemd service:
+
+**1. Install the binary:**
+```bash
+sudo cp slurm-ingestor /usr/local/bin/
+sudo chmod +x /usr/local/bin/slurm-ingestor
+```
+
+**2. Create `/etc/systemd/system/slurm-ingestor.service`:**
+```ini
+[Unit]
+Description=Slurm History Ingestor
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+ExecStart=/usr/local/bin/slurm-ingestor
+Restart=on-failure
+RestartSec=10
+
+# Configuration
+Environment="DATABASE_URL=postgres://admin:pass@db-host:5432/slurm_history"
+Environment="SLURM_SERVER=http://slurm-head:6820"
+Environment="SLURM_API_ACCOUNT=slurm_monitor"
+Environment="SLURM_API_TOKEN=your-token-here"
+Environment="CLUSTER_NAME=production-hpc"
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**3. Enable and start:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now slurm-ingestor
+systemctl status slurm-ingestor
+```
+
+---
+
+## Storage Requirements
+
+Approximately **500 bytes per job record**:
+
+| Jobs | Storage |
+|------|---------|
+| 100,000 | ~50 MB |
+| 1 million | ~500 MB |
+| 10 million | ~5 GB |
+| 100 million | ~50 GB |
+
+For large deployments (>1M jobs): use a dedicated PostgreSQL server and consider table partitioning by `submit_time`.
+
+---
+
 ## Troubleshooting
 
-*   **Connection Refused:** Ensure `SLURM_SERVER` is reachable and `slurmrestd` is running on the cluster.
-*   **Authentication Failed:** Verify `SLURM_API_USER` exists and `SLURM_API_TOKEN` is valid and has not expired.
-*   **No Jobs Syncing:** Enable `DEBUG=true`. If the logs show "No jobs found in this window," check if the `CLUSTER_NAME` matches what is in your database if you are expecting to append to existing data.
+| Issue | Solution |
+|-------|----------|
+| Connection Refused | Verify `SLURM_SERVER` is reachable and slurmrestd is running |
+| Authentication Failed | Check `SLURM_API_ACCOUNT` exists and token is valid |
+| No Jobs Syncing | Enable `DEBUG=true`, verify `CLUSTER_NAME` matches |
+| Migration Errors | Tables may already exist - usually safe to ignore |
