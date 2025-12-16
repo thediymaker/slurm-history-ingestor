@@ -88,9 +88,9 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			lookback,
 		)
 	} else {
-		// Default to Jan 1, 2024 if no history found
-		startTime = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-		log.Println("No history found. Defaulting start time to Jan 1, 2024.")
+		// Use configured initial sync date (default: Jan 1, 2024)
+		startTime = i.cfg.InitialSyncDate.Unix()
+		log.Printf("No history found. Starting from configured date: %s", i.cfg.InitialSyncDate.Format("2006-01-02"))
 	}
 
 	log.Printf("Starting sync from: %s", time.Unix(startTime, 0).Format(time.RFC3339))

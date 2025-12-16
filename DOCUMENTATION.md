@@ -94,6 +94,7 @@ The application is configured entirely via environment variables. You can set th
 | :--- | :--- | :--- |
 | `SYNC_INTERVAL` | How often (in seconds) to check for new jobs. | `300` (5 minutes) |
 | `SLURM_API_VERSION` | Slurm REST API version. | `v0.0.41` |
+| `INITIAL_SYNC_DATE` | How far back to sync on first run (YYYY-MM-DD format). | `2024-01-01` |
 | `DEBUG` | Enable verbose logging for troubleshooting. | `false` |
 
 ## Storage Requirements

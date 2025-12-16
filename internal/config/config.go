@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -16,6 +17,7 @@ type Config struct {
 	SlurmAPIVersion string
 	ClusterName     string
 	SyncInterval    int // Seconds
+	InitialSyncDate time.Time
 	Debug           bool
 }
 
@@ -33,6 +35,7 @@ func Load() *Config {
 		SlurmAPIVersion: getEnv("SLURM_API_VERSION", "v0.0.41"),
 		ClusterName:     getEnv("CLUSTER_NAME", "mycluster"),
 		SyncInterval:    getEnvInt("SYNC_INTERVAL", 300),
+		InitialSyncDate: getEnvDate("INITIAL_SYNC_DATE", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
 		Debug:           getEnvBool("DEBUG", false),
 	}
 }
@@ -58,6 +61,17 @@ func getEnvBool(key string, fallback bool) bool {
 		if b, err := strconv.ParseBool(value); err == nil {
 			return b
 		}
+	}
+	return fallback
+}
+
+func getEnvDate(key string, fallback time.Time) time.Time {
+	if value, ok := os.LookupEnv(key); ok {
+		// Try parsing as YYYY-MM-DD
+		if t, err := time.Parse("2006-01-02", value); err == nil {
+			return t
+		}
+		log.Printf("Warning: Invalid date format for %s: %s (expected YYYY-MM-DD)", key, value)
 	}
 	return fallback
 }

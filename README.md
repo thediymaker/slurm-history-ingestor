@@ -87,6 +87,7 @@ All configuration is via environment variables (or `.env` file):
 | `SLURM_API_TOKEN` | Yes | - | JWT token for auth |
 | `CLUSTER_NAME` | Yes | - | Unique cluster identifier |
 | `SLURM_API_VERSION` | No | `v0.0.41` | Slurm REST API version |
+| `INITIAL_SYNC_DATE` | No | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD) |
 | `SYNC_INTERVAL` | No | `300` | Seconds between syncs |
 | `DEBUG` | No | `false` | Enable verbose logging |
 
