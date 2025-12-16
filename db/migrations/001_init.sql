@@ -66,14 +66,14 @@ CREATE TABLE job_history (
     tres_req_str TEXT,
 
     -- Array Job Info
-    array_job_id BIGINT,
-    array_task_id INT,
+    array_job_id INTEGER,
+    array_task_id INTEGER,
 
     -- User/Group Info
     group_name TEXT,
     
     -- Additional Timestamps
-    eligible_time TIMESTAMP WITH TIME ZONE,
+    eligible_time BIGINT,
 
     -- Limits
     timelimit_minutes BIGINT,

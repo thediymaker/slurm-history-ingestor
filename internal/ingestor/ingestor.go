@@ -472,7 +472,7 @@ func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob
 		baseURL += "/"
 	}
 	// Append endpoint
-	endpoint := baseURL + "slurmdb/v0.0.41/jobs"
+	endpoint := baseURL + "slurmdb/" + i.cfg.SlurmAPIVersion + "/jobs"
 
 	u, err := url.Parse(endpoint)
 	if err != nil {

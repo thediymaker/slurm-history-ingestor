@@ -1,0 +1,68 @@
+# =============================================================================
+# Slurm History Ingestor - Docker Compose Configuration
+# =============================================================================
+#
+# OPTION A: Using your own PostgreSQL database (RECOMMENDED)
+#   1. Copy .env.example to .env
+#   2. Configure DATABASE_URL to point to your existing PostgreSQL
+#   3. Run: docker compose up -d ingestor
+#
+# OPTION B: Using bundled PostgreSQL (for testing/small deployments)
+#   1. Uncomment the 'postgres' service section below
+#   2. Uncomment 'depends_on' in ingestor service
+#   3. Set DATABASE_URL=postgres://slurm_user:changeme@postgres:5432/slurm_history
+#   4. Run: docker compose up -d
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Slurm History Ingestor Service
+  # ---------------------------------------------------------------------------
+  ingestor:
+    build: .
+    container_name: slurm-ingestor
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Uncomment below if using bundled postgres service
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+    
+    # Uncomment for host network mode (if Slurm/PostgreSQL are on host)
+    # network_mode: host
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (OPTIONAL - for testing or small deployments)
+  # ---------------------------------------------------------------------------
+  # Uncomment the section below to use a bundled PostgreSQL container.
+  # For production with millions of jobs, use a dedicated PostgreSQL server.
+  #
+  # Storage estimate: ~500 bytes per job record
+  #   - 1 million jobs ≈ 500 MB
+  #   - 10 million jobs ≈ 5 GB
+  #   - 100 million jobs ≈ 50 GB
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: slurm-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: slurm_user
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: slurm_history
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./db/migrations:/docker-entrypoint-initdb.d:ro
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U slurm_user -d slurm_history"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+# Uncomment if using bundled postgres
+# volumes:
+#   postgres_data:

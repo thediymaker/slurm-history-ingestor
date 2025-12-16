@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Environment files (contain secrets)
+.env
+*.env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts
+slurm-ingestor
+slurm-ingestor.exe
+*.exe
+
+# Documentation (not needed in image)
+*.md
+docs/
+
+# Files directory
+files/
+
+# Test files
+*_test.go
