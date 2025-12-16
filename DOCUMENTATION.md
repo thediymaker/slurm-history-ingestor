@@ -188,9 +188,21 @@ All configuration is via environment variables or a `.env` file.
 | `SYNC_INTERVAL` | `300` | Seconds between syncs |
 | `SLURM_API_VERSION` | `v0.0.41` | Slurm REST API version |
 | `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD) |
+| `CHUNK_DAYS` | `1` | Days per API request (lower = less likely to timeout) |
+| `HTTP_TIMEOUT` | `120` | Seconds to wait for API response |
 | `DEBUG` | `false` | Enable verbose logging |
 
----
+### Performance Tuning
+
+If you experience **timeout errors**, adjust these settings:
+
+| Problem | Solution |
+|---------|----------|
+| "Timeout was reached" | Reduce `CHUNK_DAYS` to `1` (or less via hours - not yet supported) |
+| Slow network | Increase `HTTP_TIMEOUT` to `300` or higher |
+| Very busy cluster | Use `CHUNK_DAYS=1` and `HTTP_TIMEOUT=180` |
+
+The ingestor will automatically retry failed requests up to 3 times with exponential backoff.
 
 ## Running as a Systemd Service
 

@@ -27,7 +27,7 @@ type Ingestor struct {
 func New(cfg *config.Config, pool *pgxpool.Pool) (*Ingestor, error) {
 	// Create a standard HTTP client
 	c := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: time.Duration(cfg.HTTPTimeout) * time.Second,
 	}
 
 	return &Ingestor{
@@ -97,8 +97,8 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 
 	endTime := time.Now().Unix()
 
-	// Chunk by 7 days to speed up sync
-	chunkSize := int64(7 * 24 * 3600)
+	// Chunk by configured days (default: 1 day) to avoid API timeouts
+	chunkSize := int64(i.cfg.ChunkDays * 24 * 3600)
 
 	for currentStart := startTime; currentStart < endTime; currentStart += chunkSize {
 		currentEnd := currentStart + chunkSize
@@ -112,10 +112,25 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			log.Printf("Syncing window: %s to %s", time.Unix(currentStart, 0).Format(time.RFC3339), time.Unix(currentEnd, 0).Format(time.RFC3339))
 		}
 
-		// 2. Fetch from Slurm using Raw Client to bypass strict validation
-		jobs, err := i.fetchJobsRaw(ctx, currentStart, currentEnd)
-		if err != nil {
-			return fmt.Errorf("slurm api error: %w", err)
+		// 2. Fetch from Slurm with retry logic for timeouts
+		var jobs []RawJob
+		var err error
+		maxRetries := 3
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			jobs, err = i.fetchJobsRaw(ctx, currentStart, currentEnd)
+			if err == nil {
+				break
+			}
+			// Check if it's a timeout error
+			if strings.Contains(err.Error(), "Timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
+				if attempt < maxRetries {
+					waitTime := time.Duration(attempt*attempt) * 10 * time.Second // Exponential backoff: 10s, 40s, 90s
+					log.Printf("API timeout (attempt %d/%d). Retrying in %v...", attempt, maxRetries, waitTime)
+					time.Sleep(waitTime)
+					continue
+				}
+			}
+			return fmt.Errorf("slurm api error after %d attempts: %w", attempt, err)
 		}
 
 		if len(jobs) == 0 {
