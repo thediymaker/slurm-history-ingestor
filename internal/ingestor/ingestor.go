@@ -112,7 +112,7 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			log.Printf("Syncing window: %s to %s", time.Unix(currentStart, 0).Format(time.RFC3339), time.Unix(currentEnd, 0).Format(time.RFC3339))
 		}
 
-		// 2. Fetch from Slurm with retry logic for timeouts
+		// 2. Fetch from Slurm with retry logic for transient errors
 		var jobs []RawJob
 		var err error
 		maxRetries := 3
@@ -121,14 +121,21 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			if err == nil {
 				break
 			}
-			// Check if it's a timeout error
-			if strings.Contains(err.Error(), "Timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
-				if attempt < maxRetries {
-					waitTime := time.Duration(attempt*attempt) * 10 * time.Second // Exponential backoff: 10s, 40s, 90s
-					log.Printf("API timeout (attempt %d/%d). Retrying in %v...", attempt, maxRetries, waitTime)
-					time.Sleep(waitTime)
-					continue
-				}
+			// Check if it's a retryable error (timeout, EOF, connection issues)
+			errStr := err.Error()
+			isRetryable := strings.Contains(errStr, "Timeout") ||
+				strings.Contains(errStr, "timeout") ||
+				strings.Contains(errStr, "context deadline exceeded") ||
+				strings.Contains(errStr, "EOF") ||
+				strings.Contains(errStr, "connection reset") ||
+				strings.Contains(errStr, "connection refused") ||
+				strings.Contains(errStr, "Connection refused")
+			
+			if isRetryable && attempt < maxRetries {
+				waitTime := time.Duration(attempt*attempt) * 10 * time.Second // Exponential backoff: 10s, 40s, 90s
+				log.Printf("API error (attempt %d/%d): %v. Retrying in %v...", attempt, maxRetries, err, waitTime)
+				time.Sleep(waitTime)
+				continue
 			}
 			return fmt.Errorf("slurm api error after %d attempts: %w", attempt, err)
 		}
