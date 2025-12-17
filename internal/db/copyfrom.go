@@ -86,7 +86,8 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
 	}
 
 	// 3. Upsert from Temp to Main
-	// We use ON CONFLICT DO UPDATE to ensure latest state is captured (e.g. job finished)
+	// Use DISTINCT ON to handle any duplicates in temp table (same job_id, cluster, submit_time)
+	// ON CONFLICT doesn't help for intra-statement duplicates
 	query := `
         INSERT INTO job_history (
             job_id, cluster, user_id, account_id, partition, qos,
@@ -95,13 +96,14 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
             wait_time_seconds, run_time_seconds, core_hours,
             job_name, tres_alloc_str, tres_req_str, array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes
         )
-        SELECT 
+        SELECT DISTINCT ON (job_id, cluster, submit_time)
             job_id, cluster, user_id, account_id, partition, qos,
             job_state, exit_code, derived_exit_state, req_cpus, req_nodes, req_mem_mc,
             max_rss, node_list, submit_time, start_time, end_time,
             wait_time_seconds, run_time_seconds, core_hours,
             job_name, tres_alloc_str, tres_req_str, array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes
         FROM job_history_temp
+        ORDER BY job_id, cluster, submit_time, end_time DESC NULLS LAST
         ON CONFLICT (job_id, cluster, submit_time) 
         DO UPDATE SET
             job_state = EXCLUDED.job_state,
