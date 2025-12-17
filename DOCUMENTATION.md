@@ -225,32 +225,63 @@ The ingestor will automatically retry failed requests up to 3 times with exponen
 
 For production deployments, run as a systemd service:
 
-**1. Install the binary:**
+**1. Install the binary and config:**
 ```bash
-sudo cp slurm-ingestor /usr/local/bin/
-sudo chmod +x /usr/local/bin/slurm-ingestor
+# Create installation directory
+sudo mkdir -p /opt/slurm-ingestor
+
+# Copy binary
+sudo cp slurm-ingestor /opt/slurm-ingestor/
+sudo chmod +x /opt/slurm-ingestor/slurm-ingestor
+
+# Copy and edit your .env file
+sudo cp .env /opt/slurm-ingestor/.env
+sudo chmod 600 /opt/slurm-ingestor/.env  # Protect credentials
 ```
 
 **2. Create `/etc/systemd/system/slurm-ingestor.service`:**
+
+*Using .env file (recommended):*
 ```ini
 [Unit]
 Description=Slurm History Ingestor
-After=network.target postgresql.service
+After=network.target
 
 [Service]
 Type=simple
 User=slurm
 Group=slurm
-ExecStart=/usr/local/bin/slurm-ingestor
+WorkingDirectory=/opt/slurm-ingestor
+ExecStart=/opt/slurm-ingestor/slurm-ingestor
 Restart=on-failure
 RestartSec=10
 
-# Configuration
-Environment="DATABASE_URL=postgres://admin:pass@db-host:5432/slurm_history"
-Environment="SLURM_SERVER=http://slurm-head:6820"
-Environment="SLURM_API_ACCOUNT=slurm_monitor"
-Environment="SLURM_API_TOKEN=your-token-here"
+# Load configuration from .env file
+EnvironmentFile=/opt/slurm-ingestor/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+*Or define variables directly:*
+```ini
+[Unit]
+Description=Slurm History Ingestor
+After=network.target
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+ExecStart=/opt/slurm-ingestor/slurm-ingestor
+Restart=on-failure
+RestartSec=10
+
+# Sacct mode configuration
+Environment="INGEST_MODE=sacct"
+Environment="DATABASE_URL=postgres://user:pass@db-host:5432/slurm_history"
 Environment="CLUSTER_NAME=production-hpc"
+Environment="SACCT_PATH=/usr/bin/sacct"
 
 [Install]
 WantedBy=multi-user.target

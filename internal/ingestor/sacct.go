@@ -153,13 +153,15 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 	endStr := endTime.Format("2006-01-02T15:04:05")
 
 	args := []string{
-		"--starttime", startStr,
-		"--endtime", endStr,
-		"--format", sacctFormat,
+		"--allusers",
 		"--parsable2",
 		"--noheader",
-		"--allusers",
-		"--duplicates", // Include duplicates for array jobs
+		"--allocations", // Only job allocations, not steps (.batch, .extern)
+		"--duplicates",  // Include array job duplicates
+		"--clusters", s.cfg.ClusterName,
+		"--format", sacctFormat,
+		"--starttime", startStr,
+		"--endtime", endStr,
 	}
 
 	if s.cfg.Debug {
@@ -171,6 +173,10 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
+
+	// Capture stderr for error messages
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start sacct: %w", err)
@@ -221,6 +227,10 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 	}
 
 	if err := cmd.Wait(); err != nil {
+		stderrMsg := stderrBuf.String()
+		if stderrMsg != "" {
+			return nil, fmt.Errorf("sacct command failed: %s", strings.TrimSpace(stderrMsg))
+		}
 		return nil, fmt.Errorf("sacct command failed: %w", err)
 	}
 
