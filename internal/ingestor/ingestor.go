@@ -233,6 +233,22 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 		runTime := timeEnd - timeStart
 		waitTime := timeStart - timeSubmit
 
+		// Validate timestamps - skip jobs with corrupted data
+		// Some jobs have start_time far in the future (e.g., year 2106) which causes negative run_time
+		now := time.Now()
+		if startTime.After(now.Add(24 * time.Hour)) {
+			if i.cfg.Debug {
+				log.Printf("Debug: Skipping job %d with future start_time: %s", *job.JobId, startTime.Format(time.RFC3339))
+			}
+			continue
+		}
+		if runTime < 0 || waitTime < 0 {
+			if i.cfg.Debug {
+				log.Printf("Debug: Skipping job %d with negative runtime (%d) or waittime (%d)", *job.JobId, runTime, waitTime)
+			}
+			continue
+		}
+
 		cpusReq := int32(0)
 		if job.Required != nil {
 			if job.Required.CPUs != nil {
