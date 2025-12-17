@@ -18,8 +18,10 @@ type Config struct {
 	ClusterName     string
 	SyncInterval    int // Seconds
 	InitialSyncDate time.Time
-	ChunkHours      int // Hours per API request chunk
-	HTTPTimeout     int // Seconds for HTTP requests
+	ChunkHours      int    // Hours per API request chunk
+	HTTPTimeout     int    // Seconds for HTTP requests
+	IngestMode      string // "api" or "sacct"
+	SacctPath       string // Path to sacct binary
 	Debug           bool
 }
 
@@ -40,6 +42,8 @@ func Load() *Config {
 		InitialSyncDate: getEnvDate("INITIAL_SYNC_DATE", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
 		ChunkHours:      getEnvInt("CHUNK_HOURS", 24),
 		HTTPTimeout:     getEnvInt("HTTP_TIMEOUT", 120),
+		IngestMode:      getEnv("INGEST_MODE", "api"),
+		SacctPath:       getEnv("SACCT_PATH", "sacct"),
 		Debug:           getEnvBool("DEBUG", false),
 	}
 }

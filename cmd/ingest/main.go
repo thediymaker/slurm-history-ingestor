@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,10 +13,15 @@ import (
 	"github.com/thediymaker/slurm-history-ingestor/internal/ingestor"
 )
 
+// Runner interface for both API and sacct ingestors
+type Runner interface {
+	Run(ctx context.Context) error
+}
+
 func main() {
 	// 1. Load Config
 	cfg := config.Load()
-	log.Printf("Starting Slurm Ingestor for cluster: %s", cfg.ClusterName)
+	log.Printf("Starting Slurm Ingestor for cluster: %s (mode: %s)", cfg.ClusterName, cfg.IngestMode)
 
 	// 2. Connect to DB
 	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
@@ -24,8 +30,21 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 3. Initialize Ingestor
-	svc, err := ingestor.New(cfg, pool)
+	// 3. Initialize Ingestor based on mode
+	var svc Runner
+	mode := strings.ToLower(cfg.IngestMode)
+	
+	switch mode {
+	case "sacct":
+		log.Println("Using SACCT mode (direct sacct command)")
+		svc, err = ingestor.NewSacct(cfg, pool)
+	case "api", "":
+		log.Println("Using API mode (Slurm REST API)")
+		svc, err = ingestor.New(cfg, pool)
+	default:
+		log.Fatalf("Unknown INGEST_MODE: %s (valid options: api, sacct)", cfg.IngestMode)
+	}
+	
 	if err != nil {
 		log.Fatalf("Failed to initialize ingestor: %v", err)
 	}
@@ -47,3 +66,4 @@ func main() {
 		log.Fatalf("Ingestor stopped with error: %v", err)
 	}
 }
+

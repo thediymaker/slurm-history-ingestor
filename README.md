@@ -8,6 +8,9 @@ A standalone Go service that ingests job history from a Slurm HPC cluster's REST
 - **Robust Data Handling** - Uses lookback window to catch out-of-order jobs
 - **Data Normalization** - Converts TRES strings to query-friendly columns (core_hours, wait_time, etc.)
 - **Multi-Cluster Support** - Tag records with cluster name for centralized databases
+- **Two Ingest Modes**:
+  - **API Mode** - Uses Slurm REST API (slurmrestd)
+  - **Sacct Mode** - Uses sacct command directly (faster, more reliable)
 - **Docker Ready** - Multi-stage build for minimal production images
 
 ## Quick Start
@@ -72,24 +75,35 @@ go build -o slurm-ingestor cmd/ingest/main.go
 |-------------|---------|-------|
 | Go | 1.22+ | For building from source |
 | PostgreSQL | 13+ | Database storage |
-| Slurm | 20.11+ | With slurmrestd enabled |
+| Slurm | 20.11+ | With slurmrestd (API mode) or sacct access (sacct mode) |
 | sqlc | Latest | For code generation |
 
 ## Configuration
 
 All configuration is via environment variables (or `.env` file):
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | Yes | - | PostgreSQL connection string |
-| `SLURM_SERVER` | Yes | - | Slurm REST API URL (e.g., `http://slurm:6820`) |
-| `SLURM_API_ACCOUNT` | Yes | - | Slurm user for API auth |
-| `SLURM_API_TOKEN` | Yes | - | JWT token for auth |
-| `CLUSTER_NAME` | Yes | - | Unique cluster identifier |
-| `SLURM_API_VERSION` | No | `v0.0.41` | Slurm REST API version |
-| `INITIAL_SYNC_DATE` | No | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD) |
-| `SYNC_INTERVAL` | No | `300` | Seconds between syncs |
-| `DEBUG` | No | `false` | Enable verbose logging |
+### Required
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `CLUSTER_NAME` | Unique cluster identifier |
+
+### Ingest Mode (choose one)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INGEST_MODE` | `api` | `api` (REST API) or `sacct` (direct command) |
+| `SLURM_SERVER` | - | Slurm REST API URL (API mode only) |
+| `SLURM_API_ACCOUNT` | - | Slurm user for API auth (API mode only) |
+| `SLURM_API_TOKEN` | - | JWT token for auth (API mode only) |
+| `SACCT_PATH` | `sacct` | Path to sacct binary (sacct mode only) |
+
+### Optional
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYNC_INTERVAL` | `300` | Seconds between syncs |
+| `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run |
+| `CHUNK_HOURS` | `24` | Hours per API request (for busy clusters, try 6 or 1) |
+| `DEBUG` | `false` | Enable verbose logging |
 
 ## Production Deployment
 
