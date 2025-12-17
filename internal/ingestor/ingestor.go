@@ -97,8 +97,8 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 
 	endTime := time.Now().Unix()
 
-	// Chunk by configured days (default: 1 day) to avoid API timeouts
-	chunkSize := int64(i.cfg.ChunkDays * 24 * 3600)
+	// Chunk by configured hours (default: 24) to avoid API timeouts
+	chunkSize := int64(i.cfg.ChunkHours * 3600)
 
 	for currentStart := startTime; currentStart < endTime; currentStart += chunkSize {
 		currentEnd := currentStart + chunkSize

@@ -18,7 +18,7 @@ type Config struct {
 	ClusterName     string
 	SyncInterval    int // Seconds
 	InitialSyncDate time.Time
-	ChunkDays       int // Days per API request chunk
+	ChunkHours      int // Hours per API request chunk
 	HTTPTimeout     int // Seconds for HTTP requests
 	Debug           bool
 }
@@ -38,7 +38,7 @@ func Load() *Config {
 		ClusterName:     getEnv("CLUSTER_NAME", "mycluster"),
 		SyncInterval:    getEnvInt("SYNC_INTERVAL", 300),
 		InitialSyncDate: getEnvDate("INITIAL_SYNC_DATE", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
-		ChunkDays:       getEnvInt("CHUNK_DAYS", 1),
+		ChunkHours:      getEnvInt("CHUNK_HOURS", 24),
 		HTTPTimeout:     getEnvInt("HTTP_TIMEOUT", 120),
 		Debug:           getEnvBool("DEBUG", false),
 	}
