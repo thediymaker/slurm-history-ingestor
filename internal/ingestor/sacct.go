@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/thediymaker/slurm-history-ingestor/internal/config"
 	"github.com/thediymaker/slurm-history-ingestor/internal/db"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -165,10 +165,14 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 	}
 
 	if s.cfg.Debug {
-		log.Printf("Debug: Running: %s %s", sacctPath, strings.Join(args, " "))
+		log.Printf("Debug: Running: TZ=UTC %s %s", sacctPath, strings.Join(args, " "))
 	}
 
 	cmd := exec.CommandContext(ctx, sacctPath, args...)
+	
+	// Set TZ=UTC ensures consistent timestamps regardless of DST
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
@@ -317,7 +321,8 @@ func parseSlurmTime(s string) time.Time {
 		return time.Time{}
 	}
 	
-	// Try different formats
+	// sacct outputs UTC time when TZ=UTC is set
+	// Parse as UTC for consistency
 	formats := []string{
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04:05",
@@ -364,11 +369,28 @@ func parseMemory(s string) int64 {
 }
 
 func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error {
-	var params []db.BatchInsertHistoryParams
-	
 	// Deduplicate jobs - sacct can return duplicates
 	// Key: job_id + cluster + submit_time
 	seen := make(map[string]bool)
+	inserted := 0
+
+	// Upsert query - insert or update each job
+	upsertQuery := `
+		INSERT INTO job_history (
+			job_id, cluster, user_id, account_id, partition, qos,
+			job_state, exit_code, req_cpus, req_nodes, max_rss, node_list,
+			submit_time, start_time, end_time, wait_time_seconds, run_time_seconds,
+			core_hours, job_name, group_name, timelimit_minutes
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		ON CONFLICT (job_id, cluster, submit_time) 
+		DO UPDATE SET
+			job_state = EXCLUDED.job_state,
+			exit_code = EXCLUDED.exit_code,
+			end_time = EXCLUDED.end_time,
+			run_time_seconds = EXCLUDED.run_time_seconds,
+			core_hours = EXCLUDED.core_hours,
+			job_name = EXCLUDED.job_name
+	`
 
 	for _, job := range jobs {
 		// Skip jobs that haven't ended
@@ -400,52 +422,36 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 		waitTimeSeconds := int64(job.StartTime.Sub(job.SubmitTime).Seconds())
 		coreHours := (float64(runTimeSeconds) * float64(job.AllocCPUs)) / 3600.0
 
-		// Convert coreHours to pgtype.Numeric
-		var coreHoursNumeric pgtype.Numeric
-		coreHoursNumeric.Scan(fmt.Sprintf("%.6f", coreHours))
-
-		params = append(params, db.BatchInsertHistoryParams{
-			JobID:            job.JobID,
-			Cluster:          s.cfg.ClusterName,
-			UserID:           pgtype.Int4{Int32: userID, Valid: true},
-			AccountID:        pgtype.Int4{Int32: accountID, Valid: true},
-			Partition:        pgtype.Text{String: job.Partition, Valid: job.Partition != ""},
-			Qos:              pgtype.Text{String: job.QOS, Valid: job.QOS != ""},
-			JobState:         job.State,
-			ExitCode:         pgtype.Int4{Int32: job.ExitCode, Valid: true},
-			DerivedExitState: pgtype.Text{Valid: false},
-			ReqCpus:          pgtype.Int4{Int32: job.AllocCPUs, Valid: true},
-			ReqNodes:         pgtype.Int4{Int32: job.AllocNodes, Valid: true},
-			ReqMemMc:         pgtype.Int8{Valid: false},
-			MaxRss:           pgtype.Int8{Int64: job.MaxRSS, Valid: job.MaxRSS > 0},
-			NodeList:         pgtype.Text{String: job.NodeList, Valid: job.NodeList != ""},
-			SubmitTime:       pgtype.Timestamptz{Time: job.SubmitTime, Valid: !job.SubmitTime.IsZero()},
-			StartTime:        pgtype.Timestamptz{Time: job.StartTime, Valid: true},
-			EndTime:          pgtype.Timestamptz{Time: job.EndTime, Valid: true},
-			WaitTimeSeconds:  pgtype.Int8{Int64: waitTimeSeconds, Valid: true},
-			RunTimeSeconds:   pgtype.Int8{Int64: runTimeSeconds, Valid: true},
-			CoreHours:        coreHoursNumeric,
-			JobName:          pgtype.Text{String: job.JobName, Valid: job.JobName != ""},
-			TresAllocStr:     pgtype.Text{Valid: false},
-			TresReqStr:       pgtype.Text{Valid: false},
-			ArrayJobID:       pgtype.Int4{Valid: false},
-			ArrayTaskID:      pgtype.Int4{Valid: false},
-			GroupName:        pgtype.Text{String: job.Group, Valid: job.Group != ""},
-			EligibleTime:     pgtype.Int8{Valid: false},
-			TimelimitMinutes: pgtype.Int8{Int64: job.Timelimit, Valid: job.Timelimit > 0},
-		})
+		// Execute upsert
+		_, err = s.pool.Exec(ctx, upsertQuery,
+			job.JobID,                 // $1
+			s.cfg.ClusterName,         // $2
+			userID,                    // $3
+			accountID,                 // $4
+			job.Partition,             // $5
+			job.QOS,                   // $6
+			job.State,                 // $7
+			job.ExitCode,              // $8
+			job.AllocCPUs,             // $9
+			job.AllocNodes,            // $10
+			job.MaxRSS,                // $11
+			job.NodeList,              // $12
+			job.SubmitTime,            // $13
+			job.StartTime,             // $14
+			job.EndTime,               // $15
+			waitTimeSeconds,           // $16
+			runTimeSeconds,            // $17
+			coreHours,                 // $18
+			job.JobName,               // $19
+			job.Group,                 // $20
+			job.Timelimit,             // $21
+		)
+		if err != nil {
+			return fmt.Errorf("failed to upsert job %d: %w", job.JobID, err)
+		}
+		inserted++
 	}
 
-	if len(params) == 0 {
-		return nil
-	}
-
-	// Batch insert
-	count, err := s.db.BatchInsertHistory(ctx, params)
-	if err != nil {
-		return fmt.Errorf("batch insert failed: %w", err)
-	}
-
-	log.Printf("Inserted/updated %d jobs", count)
+	log.Printf("Inserted/updated %d jobs", inserted)
 	return nil
 }
