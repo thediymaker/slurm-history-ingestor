@@ -365,12 +365,23 @@ func parseMemory(s string) int64 {
 
 func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error {
 	var params []db.BatchInsertHistoryParams
+	
+	// Deduplicate jobs - sacct can return duplicates
+	// Key: job_id + cluster + submit_time
+	seen := make(map[string]bool)
 
 	for _, job := range jobs {
 		// Skip jobs that haven't ended
 		if job.EndTime.IsZero() || job.StartTime.IsZero() {
 			continue
 		}
+		
+		// Create unique key for deduplication
+		key := fmt.Sprintf("%d|%s|%d", job.JobID, s.cfg.ClusterName, job.SubmitTime.Unix())
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 
 		// Get/create user
 		userID, err := s.db.GetOrCreateUser(ctx, job.User)
