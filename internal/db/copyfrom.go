@@ -65,9 +65,14 @@ func (r iteratorForBatchInsertHistory) Err() error {
 }
 
 func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHistoryParams) (int64, error) {
-	// 1. Create Temp Table
-	// We use ON COMMIT DROP so it cleans up automatically at end of transaction
-	_, err := q.db.Exec(ctx, `CREATE TEMP TABLE IF NOT EXISTS job_history_temp (LIKE job_history INCLUDING ALL) ON COMMIT DROP`)
+	// 1. Create Temp Table without constraints (so duplicates don't fail)
+	_, err := q.db.Exec(ctx, `CREATE TEMP TABLE IF NOT EXISTS job_history_temp (LIKE job_history INCLUDING DEFAULTS) ON COMMIT DROP`)
+	if err != nil {
+		return 0, err
+	}
+	
+	// Truncate in case table persists from previous call
+	_, err = q.db.Exec(ctx, `TRUNCATE job_history_temp`)
 	if err != nil {
 		return 0, err
 	}
