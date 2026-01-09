@@ -34,8 +34,8 @@ func NewSacct(cfg *config.Config, pool *pgxpool.Pool) (*SacctIngestor, error) {
 }
 
 // sacct output format - must match the --format string
-// JobID|User|Account|Partition|State|ExitCode|Submit|Start|End|AllocCPUS|AllocNodes|NodeList|JobName|MaxRSS|TimelimitRaw|QOS|Group
-const sacctFormat = "JobIDRaw,User,Account,Partition,State,ExitCode,Submit,Start,End,AllocCPUS,AllocNodes,NodeList,JobName,MaxRSS,TimelimitRaw,QOS,Group"
+// JobID|User|Account|Partition|State|ExitCode|Submit|Start|End|AllocCPUS|AllocNodes|NodeList|JobName|MaxRSS|TimelimitRaw|QOS|Group|AllocTRES
+const sacctFormat = "JobIDRaw,User,Account,Partition,State,ExitCode,Submit,Start,End,AllocCPUS,AllocNodes,NodeList,JobName,MaxRSS,TimelimitRaw,QOS,Group,AllocTRES"
 
 // SacctJob represents a parsed job from sacct output
 type SacctJob struct {
@@ -56,6 +56,7 @@ type SacctJob struct {
 	Timelimit   int64 // in minutes
 	QOS         string
 	Group       string
+	GpuCount    int32 // Parsed from AllocTRES
 }
 
 // Run starts the sacct-based sync loop
@@ -243,8 +244,8 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 
 func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 	fields := strings.Split(line, "|")
-	if len(fields) < 17 {
-		return SacctJob{}, fmt.Errorf("expected 17 fields, got %d", len(fields))
+	if len(fields) < 18 {
+		return SacctJob{}, fmt.Errorf("expected 18 fields, got %d", len(fields))
 	}
 
 	// Parse JobID (handle array jobs like "12345_0")
@@ -313,6 +314,7 @@ func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 		Timelimit:  timelimit,
 		QOS:        fields[15],
 		Group:      fields[16],
+		GpuCount:   parseGpuCount(fields[17]),
 	}, nil
 }
 
@@ -368,6 +370,38 @@ func parseMemory(s string) int64 {
 	return int64(v * float64(multiplier))
 }
 
+// parseGpuCount extracts GPU count from AllocTRES string
+// Format: "billing=8,cpu=8,gres/gpu=4,mem=64G,node=1"
+func parseGpuCount(tres string) int32 {
+	if tres == "" {
+		return 0
+	}
+
+	// Split by comma and look for gres/gpu
+	parts := strings.Split(tres, ",")
+	for _, part := range parts {
+		// Look for "gres/gpu=" or "gres/gpu:"
+		if strings.Contains(part, "gres/gpu") {
+			// Extract the number after = or :
+			idx := strings.Index(part, "=")
+			if idx == -1 {
+				idx = strings.Index(part, ":")
+			}
+			if idx != -1 && idx < len(part)-1 {
+				numStr := part[idx+1:]
+				// Handle cases like "gres/gpu=4" or "gres/gpu:a100=4"
+				if colonIdx := strings.LastIndex(numStr, ":"); colonIdx != -1 {
+					numStr = numStr[colonIdx+1:]
+				}
+				if v, err := strconv.ParseInt(numStr, 10, 32); err == nil {
+					return int32(v)
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error {
 	// Deduplicate jobs - sacct can return duplicates
 	// Key: job_id + cluster + submit_time
@@ -380,8 +414,8 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 			job_id, cluster, user_id, account_id, partition, qos,
 			job_state, exit_code, req_cpus, req_nodes, max_rss, node_list,
 			submit_time, start_time, end_time, wait_time_seconds, run_time_seconds,
-			core_hours, job_name, group_name, timelimit_minutes
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+			core_hours, job_name, group_name, timelimit_minutes, gpu_count, gpu_hours
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 		ON CONFLICT (job_id, cluster, submit_time) 
 		DO UPDATE SET
 			job_state = EXCLUDED.job_state,
@@ -389,7 +423,9 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 			end_time = EXCLUDED.end_time,
 			run_time_seconds = EXCLUDED.run_time_seconds,
 			core_hours = EXCLUDED.core_hours,
-			job_name = EXCLUDED.job_name
+			job_name = EXCLUDED.job_name,
+			gpu_count = EXCLUDED.gpu_count,
+			gpu_hours = EXCLUDED.gpu_hours
 	`
 
 	for _, job := range jobs {
@@ -421,6 +457,7 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 		runTimeSeconds := int64(job.EndTime.Sub(job.StartTime).Seconds())
 		waitTimeSeconds := int64(job.StartTime.Sub(job.SubmitTime).Seconds())
 		coreHours := (float64(runTimeSeconds) * float64(job.AllocCPUs)) / 3600.0
+		gpuHours := (float64(runTimeSeconds) * float64(job.GpuCount)) / 3600.0
 
 		// Execute upsert
 		_, err = s.pool.Exec(ctx, upsertQuery,
@@ -445,6 +482,8 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 			job.JobName,               // $19
 			job.Group,                 // $20
 			job.Timelimit,             // $21
+			job.GpuCount,              // $22
+			gpuHours,                  // $23
 		)
 		if err != nil {
 			return fmt.Errorf("failed to upsert job %d: %w", job.JobID, err)

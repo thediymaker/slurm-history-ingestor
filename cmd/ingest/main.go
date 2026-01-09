@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thediymaker/slurm-history-ingestor/internal/config"
+	"github.com/thediymaker/slurm-history-ingestor/internal/db"
 	"github.com/thediymaker/slurm-history-ingestor/internal/ingestor"
 )
 
@@ -30,7 +31,12 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 3. Initialize Ingestor based on mode
+	// 3. Run database migrations (safe to re-run)
+	if err := db.RunMigrations(context.Background(), pool); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
+	// 4. Initialize Ingestor based on mode
 	var svc Runner
 	mode := strings.ToLower(cfg.IngestMode)
 	
@@ -49,7 +55,7 @@ func main() {
 		log.Fatalf("Failed to initialize ingestor: %v", err)
 	}
 
-	// 4. Run with Graceful Shutdown
+	// 5. Run with Graceful Shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
