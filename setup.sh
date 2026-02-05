@@ -5,8 +5,9 @@
 # This script will:
 #   1. Prompt for database and Slurm configuration
 #   2. Generate a .env file
-#   3. Optionally run database migrations
+#   3. Optionally run database migrations (all 3 migration files)
 #   4. Install dependencies and build the binary
+#   5. Optionally set up systemd service
 # =============================================================================
 
 set -e
@@ -66,6 +67,15 @@ check_prerequisites() {
 
 # Prompt for configuration
 configure_environment() {
+    echo -e "${BLUE}Configuration Mode${NC}"
+    echo "------------------------"
+    echo "Choose your ingest mode:"
+    echo "  1) sacct (recommended - uses sacct command directly)"
+    echo "  2) api (uses Slurm REST API)"
+    read -p "Select mode [1]: " MODE_CHOICE
+    MODE_CHOICE=${MODE_CHOICE:-1}
+    
+    echo ""
     echo -e "${BLUE}Database Configuration${NC}"
     echo "------------------------"
     
@@ -91,21 +101,30 @@ configure_environment() {
     read -p "SSL Mode [disable]: " DB_SSLMODE
     DB_SSLMODE=${DB_SSLMODE:-disable}
     
-    echo ""
-    echo -e "${BLUE}Slurm API Configuration${NC}"
-    echo "------------------------"
-    
-    read -p "Slurm Server URL [http://localhost:6820]: " SLURM_SERVER
-    SLURM_SERVER=${SLURM_SERVER:-http://localhost:6820}
-    
-    read -p "Slurm API Account [slurm]: " SLURM_API_ACCOUNT
-    SLURM_API_ACCOUNT=${SLURM_API_ACCOUNT:-slurm}
-    
-    read -sp "Slurm API Token: " SLURM_API_TOKEN
-    echo ""
-    
-    read -p "Slurm API Version [v0.0.41]: " SLURM_API_VERSION
-    SLURM_API_VERSION=${SLURM_API_VERSION:-v0.0.41}
+    if [ "$MODE_CHOICE" = "2" ]; then
+        echo ""
+        echo -e "${BLUE}Slurm API Configuration${NC}"
+        echo "------------------------"
+        
+        read -p "Slurm Server URL [http://localhost:6820]: " SLURM_SERVER
+        SLURM_SERVER=${SLURM_SERVER:-http://localhost:6820}
+        
+        read -p "Slurm API Account [slurm]: " SLURM_API_ACCOUNT
+        SLURM_API_ACCOUNT=${SLURM_API_ACCOUNT:-slurm}
+        
+        read -sp "Slurm API Token: " SLURM_API_TOKEN
+        echo ""
+        
+        read -p "Slurm API Version [v0.0.41]: " SLURM_API_VERSION
+        SLURM_API_VERSION=${SLURM_API_VERSION:-v0.0.41}
+    else
+        echo ""
+        echo -e "${BLUE}Sacct Configuration${NC}"
+        echo "------------------------"
+        
+        read -p "Path to sacct binary [sacct]: " SACCT_PATH
+        SACCT_PATH=${SACCT_PATH:-sacct}
+    fi
     
     echo ""
     echo -e "${BLUE}Cluster Configuration${NC}"
@@ -116,6 +135,9 @@ configure_environment() {
     
     read -p "Sync Interval in seconds [300]: " SYNC_INTERVAL
     SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+    
+    read -p "Initial Sync Date (YYYY-MM-DD) [2024-01-01]: " INITIAL_SYNC_DATE
+    INITIAL_SYNC_DATE=${INITIAL_SYNC_DATE:-2024-01-01}
     
     read -p "Enable Debug Mode? (y/n) [n]: " DEBUG_ENABLED
     if [[ "$DEBUG_ENABLED" =~ ^[Yy]$ ]]; then
@@ -140,19 +162,33 @@ generate_env_file() {
 # Database
 DATABASE_URL=${DATABASE_URL}
 
-# Slurm API
+# Cluster
+CLUSTER_NAME=${CLUSTER_NAME}
+SYNC_INTERVAL=${SYNC_INTERVAL}
+INITIAL_SYNC_DATE=${INITIAL_SYNC_DATE}
+DEBUG=${DEBUG}
+
+EOF
+
+    if [ "$MODE_CHOICE" = "2" ]; then
+        cat >> .env << EOF
+# Ingest Mode: API
+INGEST_MODE=api
 SLURM_SERVER=${SLURM_SERVER}
 SLURM_API_ACCOUNT=${SLURM_API_ACCOUNT}
 SLURM_API_TOKEN=${SLURM_API_TOKEN}
 SLURM_API_VERSION=${SLURM_API_VERSION}
-
-# Cluster
-CLUSTER_NAME=${CLUSTER_NAME}
-SYNC_INTERVAL=${SYNC_INTERVAL}
-DEBUG=${DEBUG}
 EOF
+    else
+        cat >> .env << EOF
+# Ingest Mode: Sacct (recommended)
+INGEST_MODE=sacct
+SACCT_PATH=${SACCT_PATH}
+EOF
+    fi
     
-    print_step ".env file created"
+    chmod 600 .env
+    print_step ".env file created (permissions: 600)"
 }
 
 # Run database migrations
@@ -173,15 +209,31 @@ run_migrations() {
                 }
             fi
             
-            # Run migrations
-            PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f db/migrations/001_init.sql 2>/dev/null && {
-                print_step "Database migrations completed"
-            } || {
-                print_warning "Migration may have failed or tables already exist. Check manually if needed."
-            }
+            # Run all migrations
+            MIGRATION_SUCCESS=true
+            for migration in db/migrations/001_init.sql db/migrations/002_add_gpu_fields.sql db/migrations/003_add_gpu_metrics.sql; do
+                if [ -f "$migration" ]; then
+                    echo "  Running $(basename $migration)..."
+                    PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$migration" 2>/dev/null || {
+                        print_warning "Migration $(basename $migration) may have failed or tables already exist."
+                        MIGRATION_SUCCESS=false
+                    }
+                else
+                    print_warning "Migration file $migration not found"
+                    MIGRATION_SUCCESS=false
+                fi
+            done
+            
+            if [ "$MIGRATION_SUCCESS" = true ]; then
+                print_step "All database migrations completed"
+            else
+                print_warning "Some migrations had issues. Check manually if needed."
+            fi
         else
             print_warning "Skipping migrations. Run manually with:"
             echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f db/migrations/001_init.sql"
+            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f db/migrations/002_add_gpu_fields.sql"
+            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f db/migrations/003_add_gpu_metrics.sql"
         fi
     fi
 }
@@ -224,6 +276,75 @@ build_application() {
     print_step "Binary built: ./slurm-ingestor"
 }
 
+# Setup systemd service
+setup_systemd() {
+    echo ""
+    read -p "Set up systemd service? (requires sudo) (y/n) [n]: " SETUP_SYSTEMD
+    
+    if [[ "$SETUP_SYSTEMD" =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}Setting up systemd service...${NC}"
+        
+        INSTALL_DIR="/opt/slurm-ingestor"
+        
+        # Create installation directory
+        echo "Creating installation directory: $INSTALL_DIR"
+        sudo mkdir -p "$INSTALL_DIR"
+        
+        # Copy files
+        echo "Copying files..."
+        sudo cp slurm-ingestor "$INSTALL_DIR/"
+        sudo cp .env "$INSTALL_DIR/"
+        sudo chmod +x "$INSTALL_DIR/slurm-ingestor"
+        sudo chmod 600 "$INSTALL_DIR/.env"
+        
+        # Create systemd service file
+        echo "Creating systemd service..."
+        sudo tee /etc/systemd/system/slurm-ingestor.service > /dev/null << EOF
+[Unit]
+Description=Slurm History Ingestor
+After=network.target remote-fs.target munge.service
+Requires=remote-fs.target munge.service
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/slurm-ingestor
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=$INSTALL_DIR/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        # Set ownership
+        read -p "Run as user [slurm]: " SERVICE_USER
+        SERVICE_USER=${SERVICE_USER:-slurm}
+        read -p "Run as group [slurm]: " SERVICE_GROUP
+        SERVICE_GROUP=${SERVICE_GROUP:-slurm}
+        
+        sudo chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
+        
+        # Reload systemd
+        sudo systemctl daemon-reload
+        
+        print_step "Systemd service created"
+        echo ""
+        echo "To start the service:"
+        echo "  sudo systemctl enable --now slurm-ingestor"
+        echo ""
+        echo "To check status:"
+        echo "  systemctl status slurm-ingestor"
+        echo ""
+        echo "To view logs:"
+        echo "  journalctl -u slurm-ingestor -f"
+    else
+        print_warning "Skipping systemd setup"
+    fi
+}
+
 # Print final instructions
 print_instructions() {
     echo ""
@@ -231,13 +352,18 @@ print_instructions() {
     echo -e "${GREEN}  Setup Complete!${NC}"
     echo -e "${GREEN}============================================${NC}"
     echo ""
-    echo "To run the ingestor:"
-    echo "  ./slurm-ingestor"
-    echo ""
-    echo "To run with Docker:"
-    echo "  docker compose up -d"
-    echo ""
-    echo "To run as a systemd service, see DOCUMENTATION.md"
+    
+    if [[ ! "$SETUP_SYSTEMD" =~ ^[Yy]$ ]]; then
+        echo "To run the ingestor manually:"
+        echo "  ./slurm-ingestor"
+        echo ""
+        echo "To run with Docker:"
+        echo "  docker compose up -d"
+        echo ""
+        echo "To set up as a systemd service, re-run this script"
+        echo "or see the documentation for manual setup."
+    fi
+    
     echo ""
 }
 
@@ -249,6 +375,7 @@ main() {
     generate_env_file
     run_migrations
     build_application
+    setup_systemd
     print_instructions
 }
 
