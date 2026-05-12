@@ -133,8 +133,11 @@ configure_environment() {
     read -p "Cluster Name [mycluster]: " CLUSTER_NAME
     CLUSTER_NAME=${CLUSTER_NAME:-mycluster}
     
-    read -p "Sync Interval in seconds [300]: " SYNC_INTERVAL
-    SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+    read -p "Sync Interval in seconds [60]: " SYNC_INTERVAL
+    SYNC_INTERVAL=${SYNC_INTERVAL:-60}
+
+    read -p "Lookback overlap in minutes [5]: " LOOKBACK_MINUTES
+    LOOKBACK_MINUTES=${LOOKBACK_MINUTES:-5}
     
     read -p "Initial Sync Date (YYYY-MM-DD) [2024-01-01]: " INITIAL_SYNC_DATE
     INITIAL_SYNC_DATE=${INITIAL_SYNC_DATE:-2024-01-01}
@@ -165,6 +168,7 @@ DATABASE_URL=${DATABASE_URL}
 # Cluster
 CLUSTER_NAME=${CLUSTER_NAME}
 SYNC_INTERVAL=${SYNC_INTERVAL}
+LOOKBACK_MINUTES=${LOOKBACK_MINUTES}
 INITIAL_SYNC_DATE=${INITIAL_SYNC_DATE}
 DEBUG=${DEBUG}
 

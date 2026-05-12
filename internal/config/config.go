@@ -22,6 +22,8 @@ type Config struct {
 	HTTPTimeout     int    // Seconds for HTTP requests
 	IngestMode      string // "api" or "sacct"
 	SacctPath       string // Path to sacct binary
+	LookbackMinutes int    // Overlap window (minutes) to catch jobs delayed by slurmdbd visibility
+	SlurmAPITZ      string // IANA timezone slurmrestd interprets zone-less timestamps in (e.g. "UTC", "America/Phoenix"). Default: UTC.
 	Debug           bool
 }
 
@@ -38,12 +40,14 @@ func Load() *Config {
 		SlurmToken:      getEnv("SLURM_API_TOKEN", ""),
 		SlurmAPIVersion: getEnv("SLURM_API_VERSION", "v0.0.41"),
 		ClusterName:     getEnv("CLUSTER_NAME", "mycluster"),
-		SyncInterval:    getEnvInt("SYNC_INTERVAL", 300),
+		SyncInterval:    getEnvInt("SYNC_INTERVAL", 60),
 		InitialSyncDate: getEnvDate("INITIAL_SYNC_DATE", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
 		ChunkHours:      getEnvInt("CHUNK_HOURS", 24),
 		HTTPTimeout:     getEnvInt("HTTP_TIMEOUT", 120),
 		IngestMode:      getEnv("INGEST_MODE", "api"),
 		SacctPath:       getEnv("SACCT_PATH", "sacct"),
+		LookbackMinutes: getEnvInt("LOOKBACK_MINUTES", 5),
+		SlurmAPITZ:      getEnv("SLURM_API_TZ", "UTC"),
 		Debug:           getEnvBool("DEBUG", false),
 	}
 }
@@ -75,11 +79,11 @@ func getEnvBool(key string, fallback bool) bool {
 
 func getEnvDate(key string, fallback time.Time) time.Time {
 	if value, ok := os.LookupEnv(key); ok {
-		// Try parsing as YYYY-MM-DD
+		// Try parsing as YYYY-MM-DD. time.Parse uses UTC when no zone is present.
 		if t, err := time.Parse("2006-01-02", value); err == nil {
-			return t
+			return t.UTC()
 		}
 		log.Printf("Warning: Invalid date format for %s: %s (expected YYYY-MM-DD)", key, value)
 	}
-	return fallback
+	return fallback.UTC()
 }

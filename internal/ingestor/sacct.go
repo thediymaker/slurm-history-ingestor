@@ -62,7 +62,17 @@ type SacctJob struct {
 // Run starts the sacct-based sync loop
 func (s *SacctIngestor) Run(ctx context.Context) error {
 	log.Printf("Starting Slurm History Ingestor (SACCT mode) for cluster: %s", s.cfg.ClusterName)
-	log.Printf("Sync interval: %d seconds, Chunk size: %d hours", s.cfg.SyncInterval, s.cfg.ChunkHours)
+	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %dh",
+		s.cfg.SyncInterval, s.cfg.LookbackMinutes, s.cfg.ChunkHours)
+	hostTZ := os.Getenv("TZ")
+	if hostTZ == "" {
+		hostTZ = "<unset, host default>"
+	}
+	log.Printf("Time check: now UTC=%s, now local=%s, host TZ env=%s, sacct will run with TZ=UTC",
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().Format(time.RFC3339),
+		hostTZ,
+	)
 
 	ticker := time.NewTicker(time.Duration(s.cfg.SyncInterval) * time.Second)
 	defer ticker.Stop()
@@ -94,21 +104,24 @@ func (s *SacctIngestor) sync(ctx context.Context) error {
 		return fmt.Errorf("failed to get last job time: %w", err)
 	}
 
+	// UTC is a hard invariant: all window boundaries are normalized to UTC before being
+	// formatted for sacct or used in comparisons. Do not rely on the subprocess TZ env
+	// for correctness; the timestamps must already be UTC by the time sacct sees them.
 	var startTime time.Time
 	if lastTime.Valid {
-		lookback := 1 * time.Minute
-		startTime = lastTime.Time.Add(-lookback)
+		lookback := time.Duration(s.cfg.LookbackMinutes) * time.Minute
+		startTime = lastTime.Time.UTC().Add(-lookback)
 		log.Printf("Found last job end time: %s. Syncing from: %s (lookback: %v)",
-			lastTime.Time.Format(time.RFC3339),
+			lastTime.Time.UTC().Format(time.RFC3339),
 			startTime.Format(time.RFC3339),
 			lookback,
 		)
 	} else {
-		startTime = s.cfg.InitialSyncDate
-		log.Printf("No history found. Starting from configured date: %s", startTime.Format("2006-01-02"))
+		startTime = s.cfg.InitialSyncDate.UTC()
+		log.Printf("No history found. Starting from configured date: %s (UTC)", startTime.Format("2006-01-02"))
 	}
 
-	endTime := time.Now()
+	endTime := time.Now().UTC()
 	chunkDuration := time.Duration(s.cfg.ChunkHours) * time.Hour
 
 	for currentStart := startTime; currentStart.Before(endTime); currentStart = currentStart.Add(chunkDuration) {
@@ -149,9 +162,13 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 		sacctPath = "sacct"
 	}
 
-	// Format times for sacct
-	startStr := startTime.Format("2006-01-02T15:04:05")
-	endStr := endTime.Format("2006-01-02T15:04:05")
+	// Format times for sacct. We force UTC here so the wall-clock string we pass
+	// matches the TZ=UTC environment we hand the subprocess below. Without this,
+	// time.Time values that are still in local zone get formatted as local
+	// wall-clock and then reinterpreted by sacct as UTC, shifting the entire
+	// poll window by the local UTC offset.
+	startStr := startTime.UTC().Format("2006-01-02T15:04:05")
+	endStr := endTime.UTC().Format("2006-01-02T15:04:05")
 
 	args := []string{
 		"--allusers",
@@ -165,15 +182,27 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 		"--endtime", endStr,
 	}
 
+	cmd := exec.CommandContext(ctx, sacctPath, args...)
+
+	// IMPORTANT: glibc's getenv() returns the FIRST match in environ. If the
+	// host already has TZ set (e.g. TZ=America/Phoenix on a US cluster), simply
+	// appending "TZ=UTC" does NOT override it -- sacct still runs in local time
+	// and the wall-clock strings we pass (formatted as UTC above) are then
+	// reinterpreted by sacct as local time, shifting the poll window by the
+	// local UTC offset. We must strip any pre-existing TZ from the inherited
+	// environment before appending our UTC value.
+	cmd.Env = appendTZ(os.Environ(), "UTC")
+
+	// Always log the actual window we're about to ask sacct for, alongside the
+	// current UTC time. If "now UTC" is not between starttime and endtime + a
+	// few seconds of slack, the ingestor is misconfigured.
+	log.Printf("sacct query: starttime=%s endtime=%s (now UTC=%s, TZ=UTC)",
+		startStr, endStr, time.Now().UTC().Format("2006-01-02T15:04:05"))
+
 	if s.cfg.Debug {
 		log.Printf("Debug: Running: TZ=UTC %s %s", sacctPath, strings.Join(args, " "))
 	}
 
-	cmd := exec.CommandContext(ctx, sacctPath, args...)
-	
-	// Set TZ=UTC ensures consistent timestamps regardless of DST
-	cmd.Env = append(os.Environ(), "TZ=UTC")
-	
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
@@ -206,8 +235,8 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 			continue
 		}
 
-		// Skip jobs with invalid timestamps
-		now := time.Now()
+		// Skip jobs with invalid timestamps (compare in UTC for consistency).
+		now := time.Now().UTC()
 		if job.StartTime.After(now.Add(24 * time.Hour)) {
 			if s.cfg.Debug {
 				log.Printf("Debug: Skipping job %d with future start_time: %s", job.JobID, job.StartTime)
@@ -318,24 +347,41 @@ func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 	}, nil
 }
 
+// appendTZ returns a copy of env with any existing TZ= entry removed and
+// "TZ=<value>" appended. This is necessary because glibc's getenv() returns
+// the first match in environ, so simply appending a duplicate TZ would not
+// override an inherited value (e.g. TZ=America/Phoenix on a US cluster).
+func appendTZ(env []string, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TZ=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	out = append(out, "TZ="+value)
+	return out
+}
+
 func parseSlurmTime(s string) time.Time {
 	if s == "" || s == "Unknown" || s == "None" {
 		return time.Time{}
 	}
-	
-	// sacct outputs UTC time when TZ=UTC is set
-	// Parse as UTC for consistency
+
+	// sacct outputs zone-less wall-clock; we run the subprocess with TZ=UTC, so
+	// the values are UTC. Use ParseInLocation with time.UTC to make that explicit
+	// rather than relying on time.Parse's implicit UTC default.
 	formats := []string{
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04:05",
 	}
-	
+
 	for _, format := range formats {
-		if t, err := time.Parse(format, s); err == nil {
+		if t, err := time.ParseInLocation(format, s, time.UTC); err == nil {
 			return t
 		}
 	}
-	
+
 	return time.Time{}
 }
 

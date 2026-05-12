@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 
@@ -40,7 +40,7 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	for _, filename := range files {
 		log.Printf("Applying migration: %s", filename)
 
-		content, err := migrationsFS.ReadFile(filepath.Join("migrations", filename))
+		content, err := migrationsFS.ReadFile(path.Join("migrations", filename))
 		if err != nil {
 			return fmt.Errorf("failed to read migration %s: %w", filename, err)
 		}

@@ -39,6 +39,24 @@ func New(cfg *config.Config, pool *pgxpool.Pool) (*Ingestor, error) {
 }
 
 func (i *Ingestor) Run(ctx context.Context) error {
+	log.Printf("Starting Slurm History Ingestor (API mode) for cluster: %s", i.cfg.ClusterName)
+	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %dh, API: %s",
+		i.cfg.SyncInterval, i.cfg.LookbackMinutes, i.cfg.ChunkHours, i.cfg.SlurmAPIVersion)
+
+	apiLoc, locErr := time.LoadLocation(i.cfg.SlurmAPITZ)
+	if locErr != nil {
+		log.Printf("Warning: invalid SLURM_API_TZ=%q, falling back to UTC: %v", i.cfg.SlurmAPITZ, locErr)
+		apiLoc = time.UTC
+	}
+	now := time.Now()
+	log.Printf("Time check: now UTC=%s | now local=%s | now slurmrestd-tz (%s)=%s",
+		now.UTC().Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		i.cfg.SlurmAPITZ,
+		now.In(apiLoc).Format(time.RFC3339),
+	)
+	log.Printf("API query window will be formatted in TZ=%s (set SLURM_API_TZ to match slurmrestd's local timezone; default UTC).", i.cfg.SlurmAPITZ)
+
 	// Run once immediately
 	log.Println("Running initial sync...")
 	if err := i.syncJobs(ctx); err != nil {
@@ -77,25 +95,25 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 
 	var startTime int64
 	if lastTime.Valid {
-		// Use the last job's end time minus a lookback window to ensure we don't miss out-of-order jobs
-		// or jobs that finished while the ingestor was down/sleeping.
-		// Duplicates are handled by the database ON CONFLICT clause.
-		lookback := 1 * time.Minute
-		startTime = lastTime.Time.Add(-lookback).Unix()
+		// Overlap window to catch jobs delayed by slurmdbd visibility or that
+		// finished while the ingestor was down. Duplicates are deduped by the
+		// ON CONFLICT clause on (job_id, cluster, submit_time).
+		lookback := time.Duration(i.cfg.LookbackMinutes) * time.Minute
+		startTime = lastTime.Time.UTC().Add(-lookback).Unix()
 		log.Printf("Found last job end time: %s. Syncing from: %s (lookback: %v)",
-			lastTime.Time.Format(time.RFC3339),
-			time.Unix(startTime, 0).Format(time.RFC3339),
+			lastTime.Time.UTC().Format(time.RFC3339),
+			time.Unix(startTime, 0).UTC().Format(time.RFC3339),
 			lookback,
 		)
 	} else {
 		// Use configured initial sync date (default: Jan 1, 2024)
-		startTime = i.cfg.InitialSyncDate.Unix()
-		log.Printf("No history found. Starting from configured date: %s", i.cfg.InitialSyncDate.Format("2006-01-02"))
+		startTime = i.cfg.InitialSyncDate.UTC().Unix()
+		log.Printf("No history found. Starting from configured date: %s", i.cfg.InitialSyncDate.UTC().Format("2006-01-02"))
 	}
 
-	log.Printf("Starting sync from: %s", time.Unix(startTime, 0).Format(time.RFC3339))
+	log.Printf("Starting sync from: %s", time.Unix(startTime, 0).UTC().Format(time.RFC3339))
 
-	endTime := time.Now().Unix()
+	endTime := time.Now().UTC().Unix()
 
 	// Chunk by configured hours (default: 24) to avoid API timeouts
 	chunkSize := int64(i.cfg.ChunkHours * 3600)
@@ -109,7 +127,7 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 		if i.cfg.Debug {
 			log.Printf("Debug: Syncing window: %d to %d", currentStart, currentEnd)
 		} else {
-			log.Printf("Syncing window: %s to %s", time.Unix(currentStart, 0).Format(time.RFC3339), time.Unix(currentEnd, 0).Format(time.RFC3339))
+			log.Printf("Syncing window: %s to %s", time.Unix(currentStart, 0).UTC().Format(time.RFC3339), time.Unix(currentEnd, 0).UTC().Format(time.RFC3339))
 		}
 
 		// 2. Fetch from Slurm with retry logic for transient errors
@@ -161,7 +179,7 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 						e = *j.Time.End
 					}
 				}
-				log.Printf("Debug: First job ID: %d, Start: %s, End: %s", *j.JobId, time.Unix(s, 0).Format(time.RFC3339), time.Unix(e, 0).Format(time.RFC3339))
+				log.Printf("Debug: First job ID: %d, Start: %s, End: %s", *j.JobId, time.Unix(s, 0).UTC().Format(time.RFC3339), time.Unix(e, 0).UTC().Format(time.RFC3339))
 			}
 		}
 
@@ -233,16 +251,16 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 		// Transform
 		// Time variables already extracted above
 
-		startTime := time.Unix(timeStart, 0)
-		endTime := time.Unix(timeEnd, 0)
-		submitTime := time.Unix(timeSubmit, 0)
+		startTime := time.Unix(timeStart, 0).UTC()
+		endTime := time.Unix(timeEnd, 0).UTC()
+		submitTime := time.Unix(timeSubmit, 0).UTC()
 
 		runTime := timeEnd - timeStart
 		waitTime := timeStart - timeSubmit
 
 		// Validate timestamps - skip jobs with corrupted data
 		// Some jobs have start_time far in the future (e.g., year 2106) which causes negative run_time
-		now := time.Now()
+		now := time.Now().UTC()
 		if startTime.After(now.Add(24 * time.Hour)) {
 			if i.cfg.Debug {
 				log.Printf("Debug: Skipping job %d with future start_time: %s", *job.JobId, startTime.Format(time.RFC3339))
@@ -518,10 +536,29 @@ func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob
 	}
 
 	q := u.Query()
-	// Send Local time. Slurm API v0.0.41 seems to expect Local Time strings.
-	q.Set("start_time", time.Unix(start, 0).Local().Format("2006-01-02T15:04:05"))
-	q.Set("end_time", time.Unix(end, 0).Local().Format("2006-01-02T15:04:05"))
+	// slurmrestd parses zone-less ISO timestamps in its OWN local timezone
+	// (not UTC, and not the ingestor's TZ). Epoch integers are rejected by
+	// data_parser/v0.0.40+. We therefore format the wall-clock string in the
+	// timezone slurmrestd is running in, configured via SLURM_API_TZ (default
+	// "UTC"). If your ingestor receives jobs shifted by a fixed offset, that
+	// env var is wrong.
+	apiLoc, locErr := time.LoadLocation(i.cfg.SlurmAPITZ)
+	if locErr != nil {
+		log.Printf("Warning: invalid SLURM_API_TZ=%q, falling back to UTC: %v", i.cfg.SlurmAPITZ, locErr)
+		apiLoc = time.UTC
+	}
+	startStr := time.Unix(start, 0).In(apiLoc).Format("2006-01-02T15:04:05")
+	endStr := time.Unix(end, 0).In(apiLoc).Format("2006-01-02T15:04:05")
+	q.Set("start_time", startStr)
+	q.Set("end_time", endStr)
 	u.RawQuery = q.Encode()
+
+	if i.cfg.Debug {
+		log.Printf("Debug: API query: start_time=%s end_time=%s (slurmrestd TZ=%s, now UTC=%s)",
+			startStr, endStr, apiLoc.String(),
+			time.Now().UTC().Format(time.RFC3339),
+		)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {

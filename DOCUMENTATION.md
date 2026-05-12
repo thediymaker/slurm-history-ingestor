@@ -190,6 +190,7 @@ Choose one of two modes:
 | `SLURM_API_ACCOUNT` | Slurm user for API auth |
 | `SLURM_API_TOKEN` | JWT token for auth |
 | `SLURM_API_VERSION` | API version (default: `v0.0.41`) |
+| `SLURM_API_TZ` | IANA timezone slurmrestd interprets zone-less ISO timestamps in (default: `UTC`). Must match the TZ of the slurmrestd host -- slurmrestd does **not** accept epoch integers and parses ISO timestamps in its own local timezone, not UTC. |
 
 **Sacct Mode** (recommended) - Uses sacct command directly:
 | Variable | Description |
@@ -203,11 +204,24 @@ Choose one of two modes:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SYNC_INTERVAL` | `300` | Seconds between syncs |
-| `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD) |
+| `SYNC_INTERVAL` | `60` | Seconds between syncs (near real-time) |
+| `LOOKBACK_MINUTES` | `5` | Overlap window (minutes) re-scanned on every sync after the first run, to absorb delayed slurmdbd visibility. Duplicates are deduped by the database `ON CONFLICT` clause. |
+| `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD, interpreted as UTC) |
 | `CHUNK_HOURS` | `24` | Hours per request chunk (lower = less data per request) |
 | `HTTP_TIMEOUT` | `120` | Seconds to wait for API response (API mode only) |
 | `DEBUG` | `false` | Enable verbose logging |
+| `TZ` | unset | Optional. The ingestor normalizes all timestamps to UTC in code; setting `TZ=UTC` on the service or container is recommended only for log clarity. |
+
+### Timezone Handling
+
+All time math in the ingestor is done in UTC end-to-end:
+
+- The poll window (`startTime`, `endTime`) is computed and stored as UTC.
+- **Sacct mode:** the window is formatted as `YYYY-MM-DDTHH:MM:SS` in UTC, and the `sacct` subprocess is launched with `TZ=UTC` (any inherited `TZ` is stripped first, since glibc returns the first match in `environ`). `sacct` output (`Submit`, `Start`, `End`) is parsed explicitly as UTC.
+- **API mode:** slurmrestd does **not** accept epoch integers and parses zone-less ISO timestamps in its own local timezone. The window is therefore converted into the zone given by `SLURM_API_TZ` (default `UTC`) only when formatting the `start_time` / `end_time` query parameters. Set `SLURM_API_TZ` to match the TZ env of the slurmrestd / slurmctld process (e.g. `America/Phoenix`).
+- `submit_time`, `start_time`, `end_time` returned from the API or sacct are converted to UTC before being written to PostgreSQL `TIMESTAMP WITH TIME ZONE` columns, which store absolute moments.
+
+This means jobs that finish "now" are visible on the next poll (typically within `SYNC_INTERVAL + LOOKBACK_MINUTES`). If you see job history that appears to lag by hours in API mode, check that `SLURM_API_TZ` matches the slurmrestd host's local timezone.
 
 ### Performance Tuning (API Mode)
 

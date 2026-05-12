@@ -95,15 +95,19 @@ All configuration is via environment variables (or `.env` file):
 | `SLURM_SERVER` | - | Slurm REST API URL (API mode only) |
 | `SLURM_API_ACCOUNT` | - | Slurm user for API auth (API mode only) |
 | `SLURM_API_TOKEN` | - | JWT token for auth (API mode only) |
+| `SLURM_API_TZ` | `UTC` | IANA timezone slurmrestd interprets ISO timestamps in (API mode only). Must match the TZ of the slurmrestd host. |
 | `SACCT_PATH` | `sacct` | Path to sacct binary (sacct mode only) |
 
 ### Optional
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SYNC_INTERVAL` | `300` | Seconds between syncs |
+| `SYNC_INTERVAL` | `60` | Seconds between syncs (near real-time) |
+| `LOOKBACK_MINUTES` | `5` | Overlap window to catch jobs delayed by slurmdbd visibility |
 | `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run |
 | `CHUNK_HOURS` | `24` | Hours per API request (for busy clusters, try 6 or 1) |
 | `DEBUG` | `false` | Enable verbose logging |
+
+> **Timezone:** All timestamps are normalized to UTC in code. Setting `TZ=UTC` on the service is optional and only affects log formatting; correctness does not depend on it.
 
 ## Production Deployment
 
