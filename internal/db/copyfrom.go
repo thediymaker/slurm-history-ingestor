@@ -73,7 +73,7 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
 	if err != nil {
 		return 0, err
 	}
-	
+
 	// Create temp table with same structure but NO constraints (no primary key)
 	_, err = q.db.Exec(ctx, `CREATE TEMP TABLE job_history_temp (LIKE job_history INCLUDING DEFAULTS)`)
 	if err != nil {
