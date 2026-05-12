@@ -39,24 +39,24 @@ const sacctFormat = "JobIDRaw,User,Account,Partition,State,ExitCode,Submit,Start
 
 // SacctJob represents a parsed job from sacct output
 type SacctJob struct {
-	JobID       int64
-	User        string
-	Account     string
-	Partition   string
-	State       string
-	ExitCode    int32
-	SubmitTime  time.Time
-	StartTime   time.Time
-	EndTime     time.Time
-	AllocCPUs   int32
-	AllocNodes  int32
-	NodeList    string
-	JobName     string
-	MaxRSS      int64
-	Timelimit   int64 // in minutes
-	QOS         string
-	Group       string
-	GpuCount    int32 // Parsed from AllocTRES
+	JobID      int64
+	User       string
+	Account    string
+	Partition  string
+	State      string
+	ExitCode   int32
+	SubmitTime time.Time
+	StartTime  time.Time
+	EndTime    time.Time
+	AllocCPUs  int32
+	AllocNodes int32
+	NodeList   string
+	JobName    string
+	MaxRSS     int64
+	Timelimit  int64 // in minutes
+	QOS        string
+	Group      string
+	GpuCount   int32 // Parsed from AllocTRES
 }
 
 // Run starts the sacct-based sync loop
@@ -287,7 +287,7 @@ func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 	if idx := strings.Index(jobIDStr, "."); idx != -1 {
 		jobIDStr = jobIDStr[:idx]
 	}
-	
+
 	jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
 	if err != nil {
 		return SacctJob{}, fmt.Errorf("invalid job ID %q: %w", fields[0], err)
@@ -313,10 +313,10 @@ func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 	// Parse numeric fields
 	allocCPUs := parseInt32(fields[9])
 	allocNodes := parseInt32(fields[10])
-	
+
 	// Parse MaxRSS (can be in K, M, G format)
 	maxRSS := parseMemory(fields[13])
-	
+
 	// Parse timelimit (in minutes, can be "UNLIMITED")
 	timelimit := int64(0)
 	if fields[14] != "" && fields[14] != "UNLIMITED" {
@@ -397,10 +397,10 @@ func parseMemory(s string) int64 {
 	if s == "" {
 		return 0
 	}
-	
+
 	s = strings.TrimSpace(s)
 	multiplier := int64(1)
-	
+
 	if strings.HasSuffix(s, "K") {
 		multiplier = 1024
 		s = s[:len(s)-1]
@@ -411,7 +411,7 @@ func parseMemory(s string) int64 {
 		multiplier = 1024 * 1024 * 1024
 		s = s[:len(s)-1]
 	}
-	
+
 	v, _ := strconv.ParseFloat(s, 64)
 	return int64(v * float64(multiplier))
 }
@@ -479,7 +479,7 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 		if job.EndTime.IsZero() || job.StartTime.IsZero() {
 			continue
 		}
-		
+
 		// Create unique key for deduplication
 		key := fmt.Sprintf("%d|%s|%d", job.JobID, s.cfg.ClusterName, job.SubmitTime.Unix())
 		if seen[key] {
@@ -507,29 +507,29 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 
 		// Execute upsert
 		_, err = s.pool.Exec(ctx, upsertQuery,
-			job.JobID,                 // $1
-			s.cfg.ClusterName,         // $2
-			userID,                    // $3
-			accountID,                 // $4
-			job.Partition,             // $5
-			job.QOS,                   // $6
-			job.State,                 // $7
-			job.ExitCode,              // $8
-			job.AllocCPUs,             // $9
-			job.AllocNodes,            // $10
-			job.MaxRSS,                // $11
-			job.NodeList,              // $12
-			job.SubmitTime,            // $13
-			job.StartTime,             // $14
-			job.EndTime,               // $15
-			waitTimeSeconds,           // $16
-			runTimeSeconds,            // $17
-			coreHours,                 // $18
-			job.JobName,               // $19
-			job.Group,                 // $20
-			job.Timelimit,             // $21
-			job.GpuCount,              // $22
-			gpuHours,                  // $23
+			job.JobID,         // $1
+			s.cfg.ClusterName, // $2
+			userID,            // $3
+			accountID,         // $4
+			job.Partition,     // $5
+			job.QOS,           // $6
+			job.State,         // $7
+			job.ExitCode,      // $8
+			job.AllocCPUs,     // $9
+			job.AllocNodes,    // $10
+			job.MaxRSS,        // $11
+			job.NodeList,      // $12
+			job.SubmitTime,    // $13
+			job.StartTime,     // $14
+			job.EndTime,       // $15
+			waitTimeSeconds,   // $16
+			runTimeSeconds,    // $17
+			coreHours,         // $18
+			job.JobName,       // $19
+			job.Group,         // $20
+			job.Timelimit,     // $21
+			job.GpuCount,      // $22
+			gpuHours,          // $23
 		)
 		if err != nil {
 			return fmt.Errorf("failed to upsert job %d: %w", job.JobID, err)

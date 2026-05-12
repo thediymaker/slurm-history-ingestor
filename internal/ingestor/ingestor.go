@@ -148,7 +148,7 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 				strings.Contains(errStr, "connection reset") ||
 				strings.Contains(errStr, "connection refused") ||
 				strings.Contains(errStr, "Connection refused")
-			
+
 			if isRetryable && attempt < maxRetries {
 				waitTime := time.Duration(attempt*attempt) * 10 * time.Second // Exponential backoff: 10s, 40s, 90s
 				log.Printf("API error (attempt %d/%d): %v. Retrying in %v...", attempt, maxRetries, err, waitTime)
