@@ -57,6 +57,8 @@ func (r iteratorForBatchInsertHistory) Values() ([]interface{}, error) {
 		r.rows[0].GroupName,
 		r.rows[0].EligibleTime,
 		r.rows[0].TimelimitMinutes,
+		r.rows[0].GpuCount,
+		r.rows[0].GpuHours,
 	}, nil
 }
 
@@ -80,7 +82,7 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
 
 	// 2. Copy to Temp Table
 	// Note: We use the same columns as defined in the original CopyFrom
-	count, err := q.db.CopyFrom(ctx, []string{"job_history_temp"}, []string{"job_id", "cluster", "user_id", "account_id", "partition", "qos", "job_state", "exit_code", "derived_exit_state", "req_cpus", "req_nodes", "req_mem_mc", "max_rss", "node_list", "submit_time", "start_time", "end_time", "wait_time_seconds", "run_time_seconds", "core_hours", "job_name", "tres_alloc_str", "tres_req_str", "array_job_id", "array_task_id", "group_name", "eligible_time", "timelimit_minutes"}, &iteratorForBatchInsertHistory{rows: arg})
+	count, err := q.db.CopyFrom(ctx, []string{"job_history_temp"}, []string{"job_id", "cluster", "user_id", "account_id", "partition", "qos", "job_state", "exit_code", "derived_exit_state", "req_cpus", "req_nodes", "req_mem_mc", "max_rss", "node_list", "submit_time", "start_time", "end_time", "wait_time_seconds", "run_time_seconds", "core_hours", "job_name", "tres_alloc_str", "tres_req_str", "array_job_id", "array_task_id", "group_name", "eligible_time", "timelimit_minutes", "gpu_count", "gpu_hours"}, &iteratorForBatchInsertHistory{rows: arg})
 	if err != nil {
 		return 0, err
 	}
@@ -94,14 +96,16 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
             job_state, exit_code, derived_exit_state, req_cpus, req_nodes, req_mem_mc,
             max_rss, node_list, submit_time, start_time, end_time,
             wait_time_seconds, run_time_seconds, core_hours,
-            job_name, tres_alloc_str, tres_req_str, array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes
+            job_name, tres_alloc_str, tres_req_str, array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes,
+            gpu_count, gpu_hours
         )
         SELECT DISTINCT ON (job_id, cluster, submit_time)
             job_id, cluster, user_id, account_id, partition, qos,
             job_state, exit_code, derived_exit_state, req_cpus, req_nodes, req_mem_mc,
             max_rss, node_list, submit_time, start_time, end_time,
             wait_time_seconds, run_time_seconds, core_hours,
-            job_name, tres_alloc_str, tres_req_str, array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes
+            job_name, tres_alloc_str, tres_req_str, array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes,
+            gpu_count, gpu_hours
         FROM job_history_temp
         ORDER BY job_id, cluster, submit_time, end_time DESC NULLS LAST
         ON CONFLICT (job_id, cluster, submit_time) 
@@ -119,7 +123,9 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
             array_task_id = EXCLUDED.array_task_id,
             group_name = EXCLUDED.group_name,
             eligible_time = EXCLUDED.eligible_time,
-            timelimit_minutes = EXCLUDED.timelimit_minutes
+            timelimit_minutes = EXCLUDED.timelimit_minutes,
+            gpu_count = EXCLUDED.gpu_count,
+            gpu_hours = EXCLUDED.gpu_hours
     `
 	_, err = q.db.Exec(ctx, query)
 	if err != nil {

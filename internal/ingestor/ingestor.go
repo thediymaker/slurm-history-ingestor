@@ -336,6 +336,7 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 		}
 
 		tresAlloc := ""
+		var gpuCount int32 = 0
 		if job.Tres != nil && len(job.Tres.Allocated) > 0 {
 			var parts []string
 			for _, t := range job.Tres.Allocated {
@@ -344,6 +345,19 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 					label = fmt.Sprintf("%s:%s", t.Type, *t.Name)
 				}
 				parts = append(parts, fmt.Sprintf("%s=%d", label, t.Count))
+
+				// Extract GPU count. Slurm REST may report GPUs as either
+				// type="gres", name="gpu" (or "gpu:<model>") or type="gres/gpu".
+				typeLower := strings.ToLower(t.Type)
+				nameLower := ""
+				if t.Name != nil {
+					nameLower = strings.ToLower(*t.Name)
+				}
+				if typeLower == "gres/gpu" || strings.HasPrefix(typeLower, "gres/gpu:") ||
+					(typeLower == "gres" && (nameLower == "gpu" || strings.HasPrefix(nameLower, "gpu:"))) ||
+					typeLower == "gpu" {
+					gpuCount += int32(t.Count)
+				}
 			}
 			tresAlloc = strings.Join(parts, ",")
 		}
@@ -388,6 +402,10 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 			}
 		}
 
+		gpuHours := (float64(runTime) * float64(gpuCount)) / 3600.0
+		var numericGpuHours pgtype.Numeric
+		numericGpuHours.Scan(fmt.Sprintf("%.2f", gpuHours))
+
 		params = append(params, db.BatchInsertHistoryParams{
 			JobID:            jobID,
 			Cluster:          i.cfg.ClusterName,
@@ -415,6 +433,8 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 			GroupName:        pgtype.Text{String: groupName, Valid: true},
 			EligibleTime:     eligibleTimeVal,
 			TimelimitMinutes: timelimitMinutesVal,
+			GpuCount:         pgtype.Int4{Int32: gpuCount, Valid: true},
+			GpuHours:         numericGpuHours,
 		})
 	}
 

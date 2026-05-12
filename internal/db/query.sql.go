@@ -40,6 +40,8 @@ type BatchInsertHistoryParams struct {
 	GroupName        pgtype.Text
 	EligibleTime     pgtype.Int8
 	TimelimitMinutes pgtype.Int8
+	GpuCount         pgtype.Int4
+	GpuHours         pgtype.Numeric
 }
 
 const getLastJobEndTime = `-- name: GetLastJobEndTime :one
