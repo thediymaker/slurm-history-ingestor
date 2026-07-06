@@ -2,7 +2,7 @@
 -- Safe to re-run (uses IF NOT EXISTS)
 --
 -- This table stores historical GPU utilization metrics captured from Prometheus.
--- Data is captured by the /api/gpu-metrics/capture endpoint (called via cron).
+-- Data is captured by the /api/gpu endpoint (called via POST).
 -- Requires: Job Metrics Plugin + GPU Utilization Plugin enabled
 
 create table if not exists job_gpu_metrics (

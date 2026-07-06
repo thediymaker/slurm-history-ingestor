@@ -58,7 +58,7 @@ sqlc generate
 go mod tidy
 
 # 4. Run database migrations
-psql -h localhost -U your_user -d slurm_history -f db/migrations/001_init.sql
+psql -h localhost -U your_user -d slurm_history -f internal/db/migrations/001_init.sql
 
 # 5. Configure environment
 cp .env.example .env

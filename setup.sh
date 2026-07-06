@@ -215,7 +215,7 @@ run_migrations() {
             
             # Run all migrations
             MIGRATION_SUCCESS=true
-            for migration in db/migrations/001_init.sql db/migrations/002_add_gpu_fields.sql db/migrations/003_add_gpu_metrics.sql; do
+            for migration in internal/db/migrations/001_init.sql internal/db/migrations/002_add_gpu_fields.sql internal/db/migrations/003_add_gpu_metrics.sql; do
                 if [ -f "$migration" ]; then
                     echo "  Running $(basename $migration)..."
                     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$migration" 2>/dev/null || {
@@ -235,9 +235,9 @@ run_migrations() {
             fi
         else
             print_warning "Skipping migrations. Run manually with:"
-            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f db/migrations/001_init.sql"
-            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f db/migrations/002_add_gpu_fields.sql"
-            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f db/migrations/003_add_gpu_metrics.sql"
+            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f internal/db/migrations/001_init.sql"
+            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f internal/db/migrations/002_add_gpu_fields.sql"
+            echo "  psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f internal/db/migrations/003_add_gpu_metrics.sql"
         fi
     fi
 }

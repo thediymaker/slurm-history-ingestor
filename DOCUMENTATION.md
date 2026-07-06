@@ -80,7 +80,7 @@ You must create the database tables before starting the ingestor. Choose based o
 
 *If using an existing PostgreSQL server:*
 ```bash
-psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f db/migrations/001_init.sql
+psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f internal/db/migrations/001_init.sql
 ```
 
 *If using Docker Compose with bundled PostgreSQL (uncomment postgres service in docker-compose.yml first):*
@@ -120,7 +120,7 @@ mv slurm-ingestor-linux-amd64 slurm-ingestor
 **Step 2: Run database migrations**
 ```bash
 # Download the migration file
-wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/db/migrations/001_init.sql
+wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/internal/db/migrations/001_init.sql
 
 # Apply to your database
 psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f 001_init.sql
@@ -157,7 +157,7 @@ go mod tidy
 go build -o slurm-ingestor cmd/ingest/main.go
 
 # Run migrations
-psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f db/migrations/001_init.sql
+psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f internal/db/migrations/001_init.sql
 
 # Configure and run
 cp .env.example .env
