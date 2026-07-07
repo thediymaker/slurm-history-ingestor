@@ -98,8 +98,10 @@ configure_environment() {
         print_warning "No password provided. Using empty password."
     fi
     
-    read -p "SSL Mode [disable]: " DB_SSLMODE
-    DB_SSLMODE=${DB_SSLMODE:-disable}
+    # Prefer require for remote databases so credentials/data are encrypted in
+    # transit; disable is only appropriate for a local, same-host Postgres.
+    read -p "SSL Mode (require/verify-full/disable) [require]: " DB_SSLMODE
+    DB_SSLMODE=${DB_SSLMODE:-require}
     
     if [ "$MODE_CHOICE" = "2" ]; then
         echo ""
@@ -246,34 +248,16 @@ run_migrations() {
 build_application() {
     echo ""
     echo -e "${BLUE}Installing dependencies...${NC}"
-    
-    # Install sqlc
-    echo "Installing sqlc..."
-    go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-    print_step "sqlc installed"
-    
-    # Generate database code
-    echo "Generating database code..."
-    mkdir -p internal/db
-    
-    # Try to find sqlc in common locations
-    if command -v sqlc &> /dev/null; then
-        sqlc generate
-    elif [ -f "$HOME/go/bin/sqlc" ]; then
-        "$HOME/go/bin/sqlc" generate
-    elif [ -f "$(go env GOPATH)/bin/sqlc" ]; then
-        "$(go env GOPATH)/bin/sqlc" generate
-    else
-        print_error "sqlc not found in PATH. Please add \$GOPATH/bin to your PATH."
-        exit 1
-    fi
-    print_step "Database code generated"
-    
+
+    # NOTE: We do NOT run `sqlc generate`. The database code in internal/db is
+    # committed and hand-customized (see internal/db/README.md); regenerating it
+    # would revert the custom batch-upsert logic and break incremental ingestion.
+
     # Tidy dependencies
     echo "Tidying Go modules..."
     go mod tidy
     print_step "Go modules tidied"
-    
+
     # Build binary
     echo "Building binary..."
     go build -o slurm-ingestor cmd/ingest/main.go

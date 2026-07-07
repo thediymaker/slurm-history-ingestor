@@ -22,15 +22,48 @@ type SacctIngestor struct {
 	cfg  *config.Config
 	db   *db.Queries
 	pool *pgxpool.Pool
+
+	// In-process name->id caches for dimension tables (see Ingestor for
+	// rationale). Run() is single-threaded, so no locking is needed.
+	userCache    map[string]int32
+	accountCache map[string]int32
 }
 
 // NewSacct creates a new sacct-based ingestor
 func NewSacct(cfg *config.Config, pool *pgxpool.Pool) (*SacctIngestor, error) {
 	return &SacctIngestor{
-		cfg:  cfg,
-		db:   db.New(pool),
-		pool: pool,
+		cfg:          cfg,
+		db:           db.New(pool),
+		pool:         pool,
+		userCache:    make(map[string]int32),
+		accountCache: make(map[string]int32),
 	}, nil
+}
+
+// getUserID returns the id for a user name, creating and caching on first sight.
+func (s *SacctIngestor) getUserID(ctx context.Context, name string) (int32, error) {
+	if id, ok := s.userCache[name]; ok {
+		return id, nil
+	}
+	id, err := s.db.GetOrCreateUser(ctx, name)
+	if err != nil {
+		return 0, err
+	}
+	s.userCache[name] = id
+	return id, nil
+}
+
+// getAccountID is the account-table equivalent of getUserID.
+func (s *SacctIngestor) getAccountID(ctx context.Context, name string) (int32, error) {
+	if id, ok := s.accountCache[name]; ok {
+		return id, nil
+	}
+	id, err := s.db.GetOrCreateAccount(ctx, name)
+	if err != nil {
+		return 0, err
+	}
+	s.accountCache[name] = id
+	return id, nil
 }
 
 // sacct output format - must match the --format string
@@ -487,14 +520,14 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 		}
 		seen[key] = true
 
-		// Get/create user
-		userID, err := s.db.GetOrCreateUser(ctx, job.User)
+		// Get/create user (cached name->id lookup)
+		userID, err := s.getUserID(ctx, job.User)
 		if err != nil {
 			return fmt.Errorf("failed to get/create user %s: %w", job.User, err)
 		}
 
-		// Get/create account
-		accountID, err := s.db.GetOrCreateAccount(ctx, job.Account)
+		// Get/create account (cached name->id lookup)
+		accountID, err := s.getAccountID(ctx, job.Account)
 		if err != nil {
 			return fmt.Errorf("failed to get/create account %s: %w", job.Account, err)
 		}

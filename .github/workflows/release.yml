@@ -30,11 +30,12 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Install sqlc
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-
-      - name: Generate database code
-        run: sqlc generate
+      # NOTE: We intentionally do NOT run `sqlc generate` here.
+      # The files in internal/db are committed and hand-customized (see
+      # internal/db/README.md). Regenerating them would revert the custom
+      # batch-upsert logic and break incremental ingestion. Build from the
+      # committed source so release binaries match what is tested locally
+      # and in Docker.
 
       - name: Build binary
         env:

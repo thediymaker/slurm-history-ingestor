@@ -148,9 +148,9 @@ nano .env
 git clone https://github.com/thediymaker/slurm-history-ingestor.git
 cd slurm-history-ingestor
 
-# Install sqlc and generate database code
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-sqlc generate
+# NOTE: Do NOT run `sqlc generate`. The database code in internal/db is
+# committed and hand-customized (see internal/db/README.md); regenerating it
+# would revert the custom batch-upsert logic and break incremental ingestion.
 
 # Build
 go mod tidy
@@ -175,7 +175,7 @@ All configuration is via environment variables or a `.env` file.
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@localhost:5432/slurm_history?sslmode=disable` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@db-host:5432/slurm_history?sslmode=require` |
 | `CLUSTER_NAME` | Unique cluster identifier | `production-hpc` |
 
 ### Ingest Mode

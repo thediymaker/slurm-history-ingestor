@@ -56,9 +56,15 @@ func (q *Queries) GetLastJobEndTime(ctx context.Context, cluster string) (pgtype
 }
 
 const getOrCreateAccount = `-- name: GetOrCreateAccount :one
-INSERT INTO accounts (name) VALUES ($1)
-ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-RETURNING id
+WITH ins AS (
+    INSERT INTO accounts (name) VALUES ($1)
+    ON CONFLICT (name) DO NOTHING
+    RETURNING id
+)
+SELECT id FROM ins
+UNION ALL
+SELECT id FROM accounts WHERE name = $1
+LIMIT 1
 `
 
 func (q *Queries) GetOrCreateAccount(ctx context.Context, name string) (int32, error) {
@@ -69,9 +75,15 @@ func (q *Queries) GetOrCreateAccount(ctx context.Context, name string) (int32, e
 }
 
 const getOrCreateUser = `-- name: GetOrCreateUser :one
-INSERT INTO users (name) VALUES ($1)
-ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-RETURNING id
+WITH ins AS (
+    INSERT INTO users (name) VALUES ($1)
+    ON CONFLICT (name) DO NOTHING
+    RETURNING id
+)
+SELECT id FROM ins
+UNION ALL
+SELECT id FROM users WHERE name = $1
+LIMIT 1
 `
 
 func (q *Queries) GetOrCreateUser(ctx context.Context, name string) (int32, error) {

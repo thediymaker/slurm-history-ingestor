@@ -3,9 +3,11 @@ package ingestor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +24,13 @@ type Ingestor struct {
 	db     *db.Queries
 	pool   *pgxpool.Pool
 	client *http.Client
+
+	// In-process caches for dimension IDs. The users/accounts tables are tiny
+	// and effectively append-only, so caching name->id avoids a DB round-trip
+	// per job (many jobs share the same user/account). Run() is single-threaded,
+	// so no locking is needed.
+	userCache    map[string]int32
+	accountCache map[string]int32
 }
 
 func New(cfg *config.Config, pool *pgxpool.Pool) (*Ingestor, error) {
@@ -31,11 +40,40 @@ func New(cfg *config.Config, pool *pgxpool.Pool) (*Ingestor, error) {
 	}
 
 	return &Ingestor{
-		cfg:    cfg,
-		db:     db.New(pool),
-		pool:   pool,
-		client: c,
+		cfg:          cfg,
+		db:           db.New(pool),
+		pool:         pool,
+		client:       c,
+		userCache:    make(map[string]int32),
+		accountCache: make(map[string]int32),
 	}, nil
+}
+
+// getUserID returns the id for a user name, creating the row on first sight and
+// caching the result for the lifetime of the process.
+func (i *Ingestor) getUserID(ctx context.Context, name string) (int32, error) {
+	if id, ok := i.userCache[name]; ok {
+		return id, nil
+	}
+	id, err := i.db.GetOrCreateUser(ctx, name)
+	if err != nil {
+		return 0, err
+	}
+	i.userCache[name] = id
+	return id, nil
+}
+
+// getAccountID is the account-table equivalent of getUserID.
+func (i *Ingestor) getAccountID(ctx context.Context, name string) (int32, error) {
+	if id, ok := i.accountCache[name]; ok {
+		return id, nil
+	}
+	id, err := i.db.GetOrCreateAccount(ctx, name)
+	if err != nil {
+		return 0, err
+	}
+	i.accountCache[name] = id
+	return id, nil
 }
 
 func (i *Ingestor) Run(ctx context.Context) error {
@@ -139,20 +177,15 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			if err == nil {
 				break
 			}
-			// Check if it's a retryable error (timeout, EOF, connection issues)
-			errStr := err.Error()
-			isRetryable := strings.Contains(errStr, "Timeout") ||
-				strings.Contains(errStr, "timeout") ||
-				strings.Contains(errStr, "context deadline exceeded") ||
-				strings.Contains(errStr, "EOF") ||
-				strings.Contains(errStr, "connection reset") ||
-				strings.Contains(errStr, "connection refused") ||
-				strings.Contains(errStr, "Connection refused")
-
-			if isRetryable && attempt < maxRetries {
+			if isRetryableErr(err) && attempt < maxRetries {
 				waitTime := time.Duration(attempt*attempt) * 10 * time.Second // Exponential backoff: 10s, 40s, 90s
 				log.Printf("API error (attempt %d/%d): %v. Retrying in %v...", attempt, maxRetries, err, waitTime)
-				time.Sleep(waitTime)
+				// Honor cancellation during backoff so shutdown is prompt.
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(waitTime):
+				}
 				continue
 			}
 			return fmt.Errorf("slurm api error after %d attempts: %w", attempt, err)
@@ -233,8 +266,8 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 		if job.User != nil {
 			user = *job.User
 		}
-		// Get/Create Dimensions
-		userID, err := i.db.GetOrCreateUser(ctx, user)
+		// Get/Create Dimensions (cached name->id lookups)
+		userID, err := i.getUserID(ctx, user)
 		if err != nil {
 			return err
 		}
@@ -243,7 +276,7 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 		if job.Account != nil {
 			account = *job.Account
 		}
-		accountID, err := i.db.GetOrCreateAccount(ctx, account)
+		accountID, err := i.getAccountID(ctx, account)
 		if err != nil {
 			return err
 		}
@@ -463,6 +496,31 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 	return nil
 }
 
+// isRetryableErr reports whether a fetch error is worth retrying. It prefers
+// typed checks and falls back to substring matching only for low-level
+// connection errors that Go does not always surface as typed errors. A canceled
+// context (shutdown) is deliberately NOT retryable.
+func isRetryableErr(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// Fallback for syscall-level errors (ECONNRESET/ECONNREFUSED) that arrive as
+	// plain wrapped strings.
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "timeout")
+}
+
 func isFinalState(state string) bool {
 	// Handle states with flags like CANCELLED+
 	cleanState := strings.TrimSuffix(state, "+")
@@ -614,7 +672,14 @@ func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob
 	}
 
 	if i.cfg.Debug {
-		log.Printf("Debug: Response body: %s", string(body))
+		// Truncate: the full response can be many MB of job records (usernames,
+		// job names, node lists) and floods logs / aggregators.
+		const maxLog = 1000
+		preview := string(body)
+		if len(preview) > maxLog {
+			preview = preview[:maxLog] + fmt.Sprintf("... (%d bytes total, truncated)", len(body))
+		}
+		log.Printf("Debug: Response body (truncated to %d bytes): %s", maxLog, preview)
 	}
 
 	var jobResp RawJobResponse

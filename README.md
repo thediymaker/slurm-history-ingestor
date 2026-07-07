@@ -50,22 +50,19 @@ docker compose logs -f
 git clone https://github.com/thediymaker/slurm-history-ingestor.git
 cd slurm-history-ingestor
 
-# 2. Install sqlc and generate code
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-sqlc generate
-
-# 3. Install dependencies
+# 2. Install dependencies
 go mod tidy
+# NOTE: Do NOT run `sqlc generate` - the code in internal/db is committed and
+# hand-customized (see internal/db/README.md). Regenerating breaks ingestion.
 
-# 4. Run database migrations
-psql -h localhost -U your_user -d slurm_history -f internal/db/migrations/001_init.sql
+# 3. Build (the binary runs migrations itself on startup)
+go build -o slurm-ingestor cmd/ingest/main.go
 
-# 5. Configure environment
+# 4. Configure environment
 cp .env.example .env
 # Edit .env with your values
 
-# 6. Build and run
-go build -o slurm-ingestor cmd/ingest/main.go
+# 5. Run (migrations are applied automatically on first start)
 ./slurm-ingestor
 ```
 
@@ -76,7 +73,6 @@ go build -o slurm-ingestor cmd/ingest/main.go
 | Go | 1.22+ | For building from source |
 | PostgreSQL | 13+ | Database storage |
 | Slurm | 20.11+ | With slurmrestd (API mode) or sacct access (sacct mode) |
-| sqlc | Latest | For code generation |
 
 ## Configuration
 

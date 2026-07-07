@@ -1,12 +1,27 @@
 -- name: GetOrCreateUser :one
-INSERT INTO users (name) VALUES ($1)
-ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-RETURNING id;
+-- Insert the user if new, otherwise return the existing id. Uses DO NOTHING
+-- (not DO UPDATE) so repeat lookups do not write a dead row version on every
+-- call -- avoiding table/index bloat and needless WAL over millions of jobs.
+WITH ins AS (
+    INSERT INTO users (name) VALUES ($1)
+    ON CONFLICT (name) DO NOTHING
+    RETURNING id
+)
+SELECT id FROM ins
+UNION ALL
+SELECT id FROM users WHERE name = $1
+LIMIT 1;
 
 -- name: GetOrCreateAccount :one
-INSERT INTO accounts (name) VALUES ($1)
-ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-RETURNING id;
+WITH ins AS (
+    INSERT INTO accounts (name) VALUES ($1)
+    ON CONFLICT (name) DO NOTHING
+    RETURNING id
+)
+SELECT id FROM ins
+UNION ALL
+SELECT id FROM accounts WHERE name = $1
+LIMIT 1;
 
 -- name: GetLastJobEndTime :one
 SELECT MAX(end_time)::timestamptz FROM job_history WHERE cluster = $1;

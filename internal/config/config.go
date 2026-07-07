@@ -34,7 +34,7 @@ func Load() *Config {
 	}
 
 	return &Config{
-		DatabaseURL:     getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/slurm_dashboard?sslmode=disable"),
+		DatabaseURL:     getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/slurm_dashboard?sslmode=require"),
 		SlurmURL:        getEnv("SLURM_SERVER", "http://localhost:6820"),
 		SlurmUser:       getEnv("SLURM_API_ACCOUNT", "slurm"),
 		SlurmToken:      getEnv("SLURM_API_TOKEN", ""),

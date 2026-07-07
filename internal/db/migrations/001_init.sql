@@ -1,16 +1,21 @@
+-- Migration: Initial schema
+-- Idempotent (uses IF NOT EXISTS) so it is safe to re-apply. This matters for
+-- databases first created under the previous, tracking-less migration scheme:
+-- the objects already exist, so this becomes a no-op and is simply recorded.
+
 -- Dimensions
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE accounts (
+CREATE TABLE IF NOT EXISTS accounts (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
 );
 
 -- Hierarchy
-CREATE TABLE organizations (
+CREATE TABLE IF NOT EXISTS organizations (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     type TEXT NOT NULL, -- 'University', 'College', 'Department'
@@ -19,24 +24,24 @@ CREATE TABLE organizations (
     CONSTRAINT unique_org_name_type UNIQUE (name, type)
 );
 
-CREATE TABLE account_mappings (
+CREATE TABLE IF NOT EXISTS account_mappings (
     account_id INT NOT NULL REFERENCES accounts(id),
     organization_id INT NOT NULL REFERENCES organizations(id),
     PRIMARY KEY (account_id, organization_id)
 );
 
 -- Job History
-CREATE TABLE job_history (
+CREATE TABLE IF NOT EXISTS job_history (
     -- Composite Key: JobID + Cluster + SubmitTime usually ensures uniqueness
     job_id BIGINT NOT NULL,
     cluster TEXT NOT NULL,
-    
+
     -- Dimensions (Indexed for filtering)
     user_id INT REFERENCES users(id),
     account_id INT REFERENCES accounts(id),
     partition TEXT,
     qos TEXT,
-    
+
     -- Status & Outcomes
     job_state TEXT NOT NULL, -- 'COMPLETED', 'TIMEOUT', 'FAILED', 'CANCELLED'
     exit_code INT,
@@ -46,7 +51,7 @@ CREATE TABLE job_history (
     req_cpus INT,
     req_nodes INT,
     req_mem_mc BIGINT,       -- Requested MB
-    
+
     max_rss BIGINT,          -- Max Resident Set Size (bytes)
     node_list TEXT,          -- Compact string: "node[01-05]"
 
@@ -59,7 +64,7 @@ CREATE TABLE job_history (
     wait_time_seconds BIGINT,  -- start - submit
     run_time_seconds BIGINT,   -- end - start
     core_hours NUMERIC(12, 2), -- (run_time * req_cpus) / 3600
-    
+
     -- Extra Fields
     job_name TEXT,
     tres_alloc_str TEXT,
@@ -71,7 +76,7 @@ CREATE TABLE job_history (
 
     -- User/Group Info
     group_name TEXT,
-    
+
     -- Additional Timestamps
     eligible_time BIGINT,
 
@@ -82,7 +87,7 @@ CREATE TABLE job_history (
 );
 
 -- Indices for Dashboard Reporting
-CREATE INDEX idx_history_end_time ON job_history (end_time DESC);
-CREATE INDEX idx_history_user ON job_history (user_id);
-CREATE INDEX idx_history_account ON job_history (account_id);
-CREATE INDEX idx_history_cluster ON job_history (cluster);
+CREATE INDEX IF NOT EXISTS idx_history_end_time ON job_history (end_time DESC);
+CREATE INDEX IF NOT EXISTS idx_history_user ON job_history (user_id);
+CREATE INDEX IF NOT EXISTS idx_history_account ON job_history (account_id);
+CREATE INDEX IF NOT EXISTS idx_history_cluster ON job_history (cluster);

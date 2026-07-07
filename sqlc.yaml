@@ -1,3 +1,7 @@
+# WARNING: The generated code in internal/db is hand-customized and committed as
+# source of truth. Do NOT run `sqlc generate` as a routine build step -- it will
+# revert the custom batch-upsert logic in copyfrom.go and break ingestion.
+# See internal/db/README.md before regenerating.
 version: "2"
 sql:
   - schema: "internal/db/migrations"
