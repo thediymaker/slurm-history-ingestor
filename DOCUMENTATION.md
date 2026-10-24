@@ -16,36 +16,17 @@ The **Slurm History Ingestor** is a standalone Go service that syncs job history
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| PostgreSQL | 13+ | Database storage |
-| Slurm | 20.11+ | With slurmrestd enabled (API v0.0.41) |
+| PostgreSQL | 13+ | Database storage. The ingestor creates and upgrades its tables on startup, so its user needs `CREATE` permission on the database. |
+| Slurm | 20.11+ | `sacct` on the ingestor host (sacct mode), or slurmrestd (API mode). In API mode the newest API version slurmrestd serves is used unless `SLURM_API_VERSION` is set. |
 | Go | 1.22+ | Only if building from source |
-| psql | - | PostgreSQL client for running migrations |
 
-### Installing Required Packages
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install -y postgresql-client
-```
-
-**RHEL/Rocky/AlmaLinux:**
-```bash
-sudo dnf install -y postgresql
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S postgresql-libs
-```
-
-*Note: You only need the PostgreSQL **client** (psql) on the machine running the ingestor. The PostgreSQL **server** can be on a different machine.*
+No PostgreSQL client is needed: the ingestor applies its migrations itself.
 
 ---
 
 ## Quick Start
 
-Choose **one** of the following installation methods:
+Choose **one** of the following installation methods. Each one ends with the ingestor running; on first start it creates its tables and begins syncing from `INITIAL_SYNC_DATE`.
 
 ### Option A: Setup Script (Recommended for First-Time Setup)
 
@@ -56,51 +37,27 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-The script will interactively prompt for all configuration and optionally run database migrations.
+The script prompts for the configuration. When it offers to run database migrations you can skip that step; the ingestor applies them on startup.
 
 ---
 
 ### Option B: Docker (Recommended for Production)
 
-**Step 1: Clone and configure**
+Images are published to `ghcr.io/thediymaker/slurm-history-ingestor`: `:latest` and `:<version>` for releases, `:main` for the main branch. The image supports API mode; sacct mode needs `sacct` and munge on the host, so use a binary there.
+
 ```bash
-git clone https://github.com/thediymaker/slurm-history-ingestor.git
-cd slurm-history-ingestor
-cp .env.example .env
+# Download the example config and edit it
+wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/.env.example -O .env
+nano .env   # set INGEST_MODE=api, DATABASE_URL, SLURM_SERVER, SLURM_API_ACCOUNT, SLURM_API_TOKEN
+
+docker run -d --name slurm-ingestor --restart unless-stopped --env-file .env \
+  ghcr.io/thediymaker/slurm-history-ingestor:latest
+docker logs -f slurm-ingestor
 ```
 
-**Step 2: Edit `.env` with your values**
-```bash
-nano .env  # or use your preferred editor
-```
+Docker's `--env-file` keeps quotes as part of the value, so write `KEY=value` without quotes.
 
-**Step 3: Run database migrations**
-
-You must create the database tables before starting the ingestor. Choose based on your setup:
-
-*If using an existing PostgreSQL server:*
-```bash
-psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f internal/db/migrations/001_init.sql
-```
-
-*If using Docker Compose with bundled PostgreSQL (uncomment postgres service in docker-compose.yml first):*
-```bash
-# Start just the database first
-docker compose up -d postgres
-
-# Wait a few seconds for it to initialize, then run migrations
-docker compose exec postgres psql -U slurm_user -d slurm_history -f /docker-entrypoint-initdb.d/001_init.sql
-```
-
-**Step 4: Start the ingestor**
-```bash
-docker compose up -d ingestor
-```
-
-**Step 5: View logs**
-```bash
-docker compose logs -f ingestor
-```
+To build the image yourself or run the bundled PostgreSQL, use `docker-compose.yaml` in the repository (`docker compose up -d`).
 
 ---
 
@@ -117,16 +74,7 @@ chmod +x slurm-ingestor-linux-amd64
 mv slurm-ingestor-linux-amd64 slurm-ingestor
 ```
 
-**Step 2: Run database migrations**
-```bash
-# Download the migration file
-wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/internal/db/migrations/001_init.sql
-
-# Apply to your database
-psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f 001_init.sql
-```
-
-**Step 3: Configure environment**
+**Step 2: Configure environment**
 ```bash
 # Download the example config
 wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/.env.example -O .env
@@ -135,7 +83,7 @@ wget https://raw.githubusercontent.com/thediymaker/slurm-history-ingestor/main/.
 nano .env
 ```
 
-**Step 4: Run the ingestor**
+**Step 3: Run the ingestor**
 ```bash
 ./slurm-ingestor
 ```
@@ -156,10 +104,7 @@ cd slurm-history-ingestor
 go mod tidy
 go build -o slurm-ingestor cmd/ingest/main.go
 
-# Run migrations
-psql -h YOUR_DB_HOST -U YOUR_DB_USER -d YOUR_DB_NAME -f internal/db/migrations/001_init.sql
-
-# Configure and run
+# Configure and run (migrations are applied on startup)
 cp .env.example .env
 nano .env
 ./slurm-ingestor
