@@ -189,7 +189,7 @@ Choose one of two modes:
 | `SLURM_SERVER` | Slurm REST API URL (e.g., `http://slurm-head:6820`) |
 | `SLURM_API_ACCOUNT` | Slurm user for API auth |
 | `SLURM_API_TOKEN` | JWT token for auth |
-| `SLURM_API_VERSION` | API version (default: `v0.0.41`) |
+| `SLURM_API_VERSION` | API version, e.g. `v0.0.42`. Unset: the newest version slurmrestd serves |
 | `SLURM_API_TZ` | IANA timezone slurmrestd interprets zone-less ISO timestamps in (default: `UTC`). Must match the TZ of the slurmrestd host -- slurmrestd does **not** accept epoch integers and parses ISO timestamps in its own local timezone, not UTC. |
 
 **Sacct Mode** (recommended) - Uses sacct command directly:

@@ -38,7 +38,7 @@ func Load() *Config {
 		SlurmURL:        getEnv("SLURM_SERVER", "http://localhost:6820"),
 		SlurmUser:       getEnv("SLURM_API_ACCOUNT", "slurm"),
 		SlurmToken:      getEnv("SLURM_API_TOKEN", ""),
-		SlurmAPIVersion: getEnv("SLURM_API_VERSION", "v0.0.41"),
+		SlurmAPIVersion: getEnv("SLURM_API_VERSION", ""), // empty: detect in API mode
 		ClusterName:     getEnv("CLUSTER_NAME", "mycluster"),
 		SyncInterval:    getEnvInt("SYNC_INTERVAL", 60),
 		InitialSyncDate: getEnvDate("INITIAL_SYNC_DATE", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),

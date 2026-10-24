@@ -78,8 +78,12 @@ func (i *Ingestor) getAccountID(ctx context.Context, name string) (int32, error)
 
 func (i *Ingestor) Run(ctx context.Context) error {
 	log.Printf("Starting Slurm History Ingestor (API mode) for cluster: %s", i.cfg.ClusterName)
+	apiVersion := i.cfg.SlurmAPIVersion
+	if apiVersion == "" {
+		apiVersion = "detect"
+	}
 	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %dh, API: %s",
-		i.cfg.SyncInterval, i.cfg.LookbackMinutes, i.cfg.ChunkHours, i.cfg.SlurmAPIVersion)
+		i.cfg.SyncInterval, i.cfg.LookbackMinutes, i.cfg.ChunkHours, apiVersion)
 
 	apiLoc, locErr := time.LoadLocation(i.cfg.SlurmAPITZ)
 	if locErr != nil {
@@ -119,6 +123,10 @@ func (i *Ingestor) Run(ctx context.Context) error {
 }
 
 func (i *Ingestor) syncJobs(ctx context.Context) error {
+	if err := i.ensureAPIVersion(ctx); err != nil {
+		return err
+	}
+
 	// 1. Work out where this pass starts: persisted cursor, else last job end,
 	// else INITIAL_SYNC_DATE (see resolveSyncStart). The lookback overlap
 	// catches jobs delayed by slurmdbd visibility or that finished while the
@@ -587,7 +595,7 @@ type RawJob struct {
 
 func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob, error) {
 	// Construct URL
-	// Assuming /slurmdb/v0.0.41/jobs
+	// /slurmdb/<SLURM_API_VERSION>/jobs
 	// We need to respect the scheme and host from config
 
 	// Get base URL from config
