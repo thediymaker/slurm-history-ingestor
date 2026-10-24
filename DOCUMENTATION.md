@@ -5,7 +5,7 @@
 The **Slurm History Ingestor** is a standalone Go service that syncs job history from a Slurm HPC cluster's REST API into PostgreSQL for analytics and reporting.
 
 **Key Features:**
-- **Incremental Syncing** - Only fetches new jobs since last sync
+- **Incremental Syncing** - Only fetches new jobs since last sync, resuming from a persisted sync cursor (`ingest_sync_state`)
 - **Robust Data Handling** - Uses lookback window to catch out-of-order jobs
 - **Data Normalization** - Converts TRES strings to query-friendly columns
 - **Multi-Cluster Support** - Tag records with cluster name for centralized databases
@@ -205,8 +205,8 @@ Choose one of two modes:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SYNC_INTERVAL` | `60` | Seconds between syncs (near real-time) |
-| `LOOKBACK_MINUTES` | `5` | Overlap window (minutes) re-scanned on every sync after the first run, to absorb delayed slurmdbd visibility. Duplicates are deduped by the database `ON CONFLICT` clause. |
-| `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run (YYYY-MM-DD, interpreted as UTC) |
+| `LOOKBACK_MINUTES` | `5` | Overlap window (minutes) re-scanned before the sync cursor on every sync after the first run, to absorb delayed slurmdbd visibility. Duplicates are deduped by the database `ON CONFLICT` clause. |
+| `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run, i.e. when there is no sync cursor and no job history for the cluster (YYYY-MM-DD, interpreted as UTC) |
 | `CHUNK_HOURS` | `24` | Hours per request chunk (lower = less data per request) |
 | `HTTP_TIMEOUT` | `120` | Seconds to wait for API response (API mode only) |
 | `DEBUG` | `false` | Enable verbose logging |

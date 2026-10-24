@@ -4,7 +4,7 @@ A standalone Go service that ingests job history from a Slurm HPC cluster's REST
 
 ## Features
 
-- **Incremental Syncing** - Automatically detects last synced job and only fetches new data
+- **Incremental Syncing** - Persists a per-cluster sync cursor (`ingest_sync_state`) and only fetches new data, even on quiet clusters
 - **Robust Data Handling** - Uses lookback window to catch out-of-order jobs
 - **Data Normalization** - Converts TRES strings to query-friendly columns (core_hours, wait_time, etc.)
 - **Multi-Cluster Support** - Tag records with cluster name for centralized databases
