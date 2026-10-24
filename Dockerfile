@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o slurm-ingestor cmd/ingest/main.go
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.24
 
 WORKDIR /app
 
@@ -25,11 +25,14 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
 
 # Create non-root user
-RUN adduser -D -u 1000 ingestor
-USER ingestor
+RUN addgroup -S -g 1000 ingestor && adduser -S -D -H -u 1000 -G ingestor ingestor
 
-# Copy binary from builder
+# Copy binary from builder (root-owned, so the runtime user cannot modify it)
 COPY --from=builder /app/slurm-ingestor .
+
+# Numeric UID:GID so Kubernetes runAsNonRoot can verify the user without
+# resolving names from /etc/passwd.
+USER 1000:1000
 
 # Default command
 ENTRYPOINT ["./slurm-ingestor"]
