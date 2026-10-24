@@ -3,3 +3,7 @@ bin/
 dist/
 *.exe
 files/
+
+# Locally built binaries (release.yml builds these on tags)
+slurm-ingestor
+slurm-ingestor-*
