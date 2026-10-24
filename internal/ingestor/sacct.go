@@ -129,29 +129,14 @@ func (s *SacctIngestor) Run(ctx context.Context) error {
 }
 
 func (s *SacctIngestor) sync(ctx context.Context) error {
-	log.Printf("Checking database for last synced job (Cluster: %s)...", s.cfg.ClusterName)
-
-	// Get last job end time
-	lastTime, err := s.db.GetLastJobEndTime(ctx, s.cfg.ClusterName)
-	if err != nil {
-		return fmt.Errorf("failed to get last job time: %w", err)
-	}
-
 	// UTC is a hard invariant: all window boundaries are normalized to UTC before being
 	// formatted for sacct or used in comparisons. Do not rely on the subprocess TZ env
 	// for correctness; the timestamps must already be UTC by the time sacct sees them.
-	var startTime time.Time
-	if lastTime.Valid {
-		lookback := time.Duration(s.cfg.LookbackMinutes) * time.Minute
-		startTime = lastTime.Time.UTC().Add(-lookback)
-		log.Printf("Found last job end time: %s. Syncing from: %s (lookback: %v)",
-			lastTime.Time.UTC().Format(time.RFC3339),
-			startTime.Format(time.RFC3339),
-			lookback,
-		)
-	} else {
-		startTime = s.cfg.InitialSyncDate.UTC()
-		log.Printf("No history found. Starting from configured date: %s (UTC)", startTime.Format("2006-01-02"))
+	// loadSyncStart returns UTC (persisted cursor, else last job end, else
+	// INITIAL_SYNC_DATE; see resolveSyncStart).
+	startTime, err := loadSyncStart(ctx, s.db, s.cfg, syncModeSacct)
+	if err != nil {
+		return err
 	}
 
 	endTime := time.Now().UTC()
@@ -175,6 +160,10 @@ func (s *SacctIngestor) sync(ctx context.Context) error {
 			if s.cfg.Debug {
 				log.Println("Debug: No jobs found in this window.")
 			}
+			// An empty window is still fully synced; advance past it.
+			if err := saveSyncCursor(ctx, s.db, s.cfg, syncModeSacct, currentEnd); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -183,6 +172,12 @@ func (s *SacctIngestor) sync(ctx context.Context) error {
 		// Process and insert jobs
 		if err := s.processJobs(ctx, jobs); err != nil {
 			return fmt.Errorf("failed to process jobs: %w", err)
+		}
+
+		// Window fully fetched and inserted: advance the cursor so the next
+		// pass, or a restart mid-backfill, resumes here.
+		if err := saveSyncCursor(ctx, s.db, s.cfg, syncModeSacct, currentEnd); err != nil {
+			return err
 		}
 	}
 

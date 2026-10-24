@@ -92,3 +92,38 @@ func (q *Queries) GetOrCreateUser(ctx context.Context, name string) (int32, erro
 	err := row.Scan(&id)
 	return id, err
 }
+
+const getSyncCursor = `-- name: GetSyncCursor :one
+SELECT cursor_time FROM ingest_sync_state WHERE cluster = $1 AND mode = $2
+`
+
+type GetSyncCursorParams struct {
+	Cluster string
+	Mode    string
+}
+
+func (q *Queries) GetSyncCursor(ctx context.Context, arg GetSyncCursorParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getSyncCursor, arg.Cluster, arg.Mode)
+	var cursor_time pgtype.Timestamptz
+	err := row.Scan(&cursor_time)
+	return cursor_time, err
+}
+
+const upsertSyncCursor = `-- name: UpsertSyncCursor :exec
+INSERT INTO ingest_sync_state (cluster, mode, cursor_time, updated_at)
+VALUES ($1, $2, $3, now())
+ON CONFLICT (cluster, mode) DO UPDATE SET
+    cursor_time = EXCLUDED.cursor_time,
+    updated_at = now()
+`
+
+type UpsertSyncCursorParams struct {
+	Cluster    string
+	Mode       string
+	CursorTime pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertSyncCursor(ctx context.Context, arg UpsertSyncCursorParams) error {
+	_, err := q.db.Exec(ctx, upsertSyncCursor, arg.Cluster, arg.Mode, arg.CursorTime)
+	return err
+}

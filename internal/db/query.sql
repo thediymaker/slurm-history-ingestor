@@ -26,6 +26,16 @@ LIMIT 1;
 -- name: GetLastJobEndTime :one
 SELECT MAX(end_time)::timestamptz FROM job_history WHERE cluster = $1;
 
+-- name: GetSyncCursor :one
+SELECT cursor_time FROM ingest_sync_state WHERE cluster = $1 AND mode = $2;
+
+-- name: UpsertSyncCursor :exec
+INSERT INTO ingest_sync_state (cluster, mode, cursor_time, updated_at)
+VALUES ($1, $2, $3, now())
+ON CONFLICT (cluster, mode) DO UPDATE SET
+    cursor_time = EXCLUDED.cursor_time,
+    updated_at = now();
+
 -- name: BatchInsertHistory :copyfrom
 INSERT INTO job_history (
     job_id, cluster, user_id, account_id, partition, qos,

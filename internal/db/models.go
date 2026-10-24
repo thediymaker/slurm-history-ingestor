@@ -18,6 +18,13 @@ type AccountMapping struct {
 	OrganizationID int32
 }
 
+type IngestSyncState struct {
+	Cluster    string
+	Mode       string
+	CursorTime pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type JobHistory struct {
 	JobID            int64
 	Cluster          string

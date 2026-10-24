@@ -119,37 +119,16 @@ func (i *Ingestor) Run(ctx context.Context) error {
 }
 
 func (i *Ingestor) syncJobs(ctx context.Context) error {
-	// 1. Get last sync time
-	log.Printf("Checking database for last synced job (Cluster: %s)...", i.cfg.ClusterName)
-	lastTime, err := i.db.GetLastJobEndTime(ctx, i.cfg.ClusterName)
+	// 1. Work out where this pass starts: persisted cursor, else last job end,
+	// else INITIAL_SYNC_DATE (see resolveSyncStart). The lookback overlap
+	// catches jobs delayed by slurmdbd visibility or that finished while the
+	// ingestor was down. Duplicates are deduped by the ON CONFLICT clause on
+	// (job_id, cluster, submit_time).
+	start, err := loadSyncStart(ctx, i.db, i.cfg, syncModeAPI)
 	if err != nil {
-		// If error is no rows, it might be fine, but sqlc with pgx usually handles nulls via types.
-		// If it's a connection error, we log it.
-		// For now, we assume if it fails we start from default.
-		if i.cfg.Debug {
-			log.Printf("Debug: Error getting last job time (might be first run): %v", err)
-		}
+		return err
 	}
-
-	var startTime int64
-	if lastTime.Valid {
-		// Overlap window to catch jobs delayed by slurmdbd visibility or that
-		// finished while the ingestor was down. Duplicates are deduped by the
-		// ON CONFLICT clause on (job_id, cluster, submit_time).
-		lookback := time.Duration(i.cfg.LookbackMinutes) * time.Minute
-		startTime = lastTime.Time.UTC().Add(-lookback).Unix()
-		log.Printf("Found last job end time: %s. Syncing from: %s (lookback: %v)",
-			lastTime.Time.UTC().Format(time.RFC3339),
-			time.Unix(startTime, 0).UTC().Format(time.RFC3339),
-			lookback,
-		)
-	} else {
-		// Use configured initial sync date (default: Jan 1, 2024)
-		startTime = i.cfg.InitialSyncDate.UTC().Unix()
-		log.Printf("No history found. Starting from configured date: %s", i.cfg.InitialSyncDate.UTC().Format("2006-01-02"))
-	}
-
-	log.Printf("Starting sync from: %s", time.Unix(startTime, 0).UTC().Format(time.RFC3339))
+	startTime := start.Unix()
 
 	endTime := time.Now().UTC().Unix()
 
@@ -195,6 +174,10 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			if i.cfg.Debug {
 				log.Println("Debug: No jobs found in this window.")
 			}
+			// An empty window is still fully synced; advance past it.
+			if err := saveSyncCursor(ctx, i.db, i.cfg, syncModeAPI, time.Unix(currentEnd, 0)); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -216,9 +199,16 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			}
 		}
 
-		// 3. Transform and Insert
+		// 3. Transform and Insert. filterBefore is the start of the whole pass
+		// (cursor minus lookback), not this window's start.
 		if err := i.processBatch(ctx, jobs, startTime); err != nil {
 			return fmt.Errorf("batch process error: %w", err)
+		}
+
+		// 4. Window fully fetched and inserted: advance the cursor so the next
+		// pass, or a restart mid-backfill, resumes here.
+		if err := saveSyncCursor(ctx, i.db, i.cfg, syncModeAPI, time.Unix(currentEnd, 0)); err != nil {
+			return err
 		}
 	}
 
