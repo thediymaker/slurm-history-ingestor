@@ -466,6 +466,7 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 			TimelimitMinutes: timelimitMinutesVal,
 			GpuCount:         pgtype.Int4{Int32: gpuCount, Valid: true},
 			GpuHours:         numericGpuHours,
+			TotalCpuSeconds:  totalCPUSeconds(job),
 		})
 	}
 
@@ -517,6 +518,19 @@ func isRetryableErr(err error) bool {
 	return strings.Contains(errStr, "connection reset") ||
 		strings.Contains(errStr, "connection refused") ||
 		strings.Contains(errStr, "timeout")
+}
+
+// totalCPUSeconds is the CPU time the job used, rounded to the second. Unset
+// (NULL) when slurmdbd didn't report it.
+func totalCPUSeconds(job RawJob) pgtype.Int8 {
+	if job.Time == nil || job.Time.Total == nil || job.Time.Total.Seconds == nil {
+		return pgtype.Int8{}
+	}
+	secs := *job.Time.Total.Seconds
+	if us := job.Time.Total.Microseconds; us != nil {
+		secs += (*us + 500_000) / 1_000_000
+	}
+	return pgtype.Int8{Int64: secs, Valid: true}
 }
 
 func isFinalState(state string) bool {
@@ -574,6 +588,11 @@ type RawJob struct {
 		Limit      *struct {
 			Number *int64 `json:"number"`
 		} `json:"limit"`
+		// User + system CPU time, summed over the job's steps
+		Total *struct {
+			Seconds      *int64 `json:"seconds"`
+			Microseconds *int64 `json:"microseconds"`
+		} `json:"total"`
 	} `json:"time"`
 	Required *struct {
 		CPUs         *int32 `json:"CPUs"`

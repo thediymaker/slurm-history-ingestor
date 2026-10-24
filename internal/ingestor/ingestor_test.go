@@ -2,6 +2,7 @@ package ingestor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -81,5 +82,34 @@ func TestIsRetryableErrWrappedCanceled(t *testing.T) {
 	err := fmt.Errorf("fetch aborted: %w", context.Canceled)
 	if isRetryableErr(err) {
 		t.Error("wrapped context.Canceled must not be retryable")
+	}
+}
+
+func TestTotalCPUSeconds(t *testing.T) {
+	tests := []struct {
+		name  string
+		json  string
+		want  int64
+		valid bool
+	}{
+		// slurmdb v0.0.40+ job record: time.total is user + system over all steps
+		{"seconds and microseconds", `{"time":{"total":{"seconds":3725,"microseconds":600000}}}`, 3726, true},
+		{"rounds down under half a second", `{"time":{"total":{"seconds":10,"microseconds":499999}}}`, 10, true},
+		{"no microseconds", `{"time":{"total":{"seconds":42}}}`, 42, true},
+		{"zero is a value", `{"time":{"total":{"seconds":0,"microseconds":0}}}`, 0, true},
+		{"no total", `{"time":{"start":1700000000}}`, 0, false},
+		{"no time", `{}`, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var job RawJob
+			if err := json.Unmarshal([]byte(tt.json), &job); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := totalCPUSeconds(job)
+			if got.Valid != tt.valid || got.Int64 != tt.want {
+				t.Errorf("totalCPUSeconds = %+v, want %d (valid %v)", got, tt.want, tt.valid)
+			}
+		})
 	}
 }

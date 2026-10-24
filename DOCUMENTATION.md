@@ -255,6 +255,21 @@ systemctl status slurm-ingestor
 
 ---
 
+## What Gets Stored
+
+Each finished job becomes one row in `job_history`: who ran it (user, account, partition, QoS), its state and exit code, what it asked for (CPUs, nodes, memory, time limit, GPUs), its submit, start and end times, and figures derived from them (wait time, run time, core hours, GPU hours).
+
+Two columns measure what the job actually used, for the dashboard's efficiency reports:
+
+| Column | From | Notes |
+|--------|------|-------|
+| `total_cpu_seconds` | sacct `TotalCPU`, or the slurmdb job's `time.total` (seconds plus microseconds) in API mode | User plus system CPU time summed over the job's steps, rounded to the second. CPU efficiency is `total_cpu_seconds / (run_time_seconds * req_cpus)`. NULL for jobs ingested before migration `005_add_total_cpu.sql`. |
+| `max_rss` | sacct `MaxRSS` (sacct mode only) | Bytes; the highest `MaxRSS` of the job's steps. |
+
+In sacct mode the ingestor reads job steps as well as allocations (it no longer passes `--allocations`, with which sacct skips the steps those two figures come from). Steps are folded into their job and aren't stored as rows of their own. It also stores `AllocTRES` in `tres_alloc_str`.
+
+---
+
 ## Storage Requirements
 
 Approximately **500 bytes per job record**:

@@ -44,7 +44,7 @@ INSERT INTO job_history (
     wait_time_seconds, run_time_seconds, core_hours,
     job_name, tres_alloc_str, tres_req_str,
     array_job_id, array_task_id, group_name, eligible_time, timelimit_minutes,
-    gpu_count, gpu_hours
+    gpu_count, gpu_hours, total_cpu_seconds
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
 );

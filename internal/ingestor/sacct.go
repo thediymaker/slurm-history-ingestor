@@ -67,8 +67,11 @@ func (s *SacctIngestor) getAccountID(ctx context.Context, name string) (int32, e
 }
 
 // sacct output format - must match the --format string
-// JobID|User|Account|Partition|State|ExitCode|Submit|Start|End|AllocCPUS|AllocNodes|NodeList|JobName|MaxRSS|TimelimitRaw|QOS|Group|AllocTRES
-const sacctFormat = "JobIDRaw,User,Account,Partition,State,ExitCode,Submit,Start,End,AllocCPUS,AllocNodes,NodeList,JobName,MaxRSS,TimelimitRaw,QOS,Group,AllocTRES"
+// JobID|User|Account|Partition|State|ExitCode|Submit|Start|End|AllocCPUS|AllocNodes|NodeList|JobName|MaxRSS|TimelimitRaw|QOS|Group|AllocTRES|TotalCPU
+const sacctFormat = "JobIDRaw,User,Account,Partition,State,ExitCode,Submit,Start,End,AllocCPUS,AllocNodes,NodeList,JobName,MaxRSS,TimelimitRaw,QOS,Group,AllocTRES,TotalCPU"
+
+// sacctFields is the number of fields in sacctFormat
+const sacctFields = 19
 
 // SacctJob represents a parsed job from sacct output
 type SacctJob struct {
@@ -89,7 +92,11 @@ type SacctJob struct {
 	Timelimit  int64 // in minutes
 	QOS        string
 	Group      string
-	GpuCount   int32 // Parsed from AllocTRES
+	GpuCount   int32  // Parsed from AllocTRES
+	AllocTRES  string // e.g. "billing=8,cpu=8,gres/gpu=4,mem=64G,node=1"
+	TotalCPU   *int64 // CPU seconds used by all steps; nil when sacct left it empty
+
+	rawID string // JobIDRaw as printed, to match the job's step lines
 }
 
 // Run starts the sacct-based sync loop
@@ -198,12 +205,14 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 	startStr := startTime.UTC().Format("2006-01-02T15:04:05")
 	endStr := endTime.UTC().Format("2006-01-02T15:04:05")
 
+	// No --allocations: with it sacct skips the steps, so TotalCPU comes back
+	// empty or zero and MaxRSS (a per-step figure) is missing. Step lines are
+	// folded into their job below instead of being stored.
 	args := []string{
 		"--allusers",
 		"--parsable2",
 		"--noheader",
-		"--allocations", // Only job allocations, not steps (.batch, .extern)
-		"--duplicates",  // Include array job duplicates
+		"--duplicates", // Include array job duplicates
 		"--clusters", s.cfg.ClusterName,
 		"--format", sacctFormat,
 		"--starttime", startStr,
@@ -247,6 +256,9 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 	var jobs []SacctJob
 	scanner := bufio.NewScanner(stdout)
 	lineNum := 0
+	// Index in jobs of the job whose steps are being printed, -1 when that
+	// job was skipped
+	last := -1
 
 	for scanner.Scan() {
 		lineNum++
@@ -254,6 +266,17 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 		if line == "" {
 			continue
 		}
+
+		// Step lines (12345.batch, 12345.0) follow their job's line. Keep the
+		// highest step MaxRSS as the job's; the job's TotalCPU already covers
+		// its steps.
+		if parent, maxRSS, ok := parseSacctStep(line); ok {
+			if last >= 0 && jobs[last].rawID == parent && maxRSS > jobs[last].MaxRSS {
+				jobs[last].MaxRSS = maxRSS
+			}
+			continue
+		}
+		last = -1
 
 		job, err := s.parseSacctLine(line)
 		if err != nil {
@@ -282,6 +305,7 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 		}
 
 		jobs = append(jobs, job)
+		last = len(jobs) - 1
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -301,8 +325,8 @@ func (s *SacctIngestor) fetchJobs(ctx context.Context, startTime, endTime time.T
 
 func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 	fields := strings.Split(line, "|")
-	if len(fields) < 18 {
-		return SacctJob{}, fmt.Errorf("expected 18 fields, got %d", len(fields))
+	if len(fields) < sacctFields {
+		return SacctJob{}, fmt.Errorf("expected %d fields, got %d", sacctFields, len(fields))
 	}
 
 	// Parse JobID (handle array jobs like "12345_0")
@@ -372,7 +396,66 @@ func (s *SacctIngestor) parseSacctLine(line string) (SacctJob, error) {
 		QOS:        fields[15],
 		Group:      fields[16],
 		GpuCount:   parseGpuCount(fields[17]),
+		AllocTRES:  fields[17],
+		TotalCPU:   parseSlurmDuration(fields[18]),
+		rawID:      fields[0],
 	}, nil
+}
+
+// parseSacctStep reports whether line is a job step (JobIDRaw "12345.batch",
+// "12345.0", "12345.extern") and returns its job's JobIDRaw and its MaxRSS.
+func parseSacctStep(line string) (parent string, maxRSS int64, ok bool) {
+	fields := strings.Split(line, "|")
+	dot := strings.Index(fields[0], ".")
+	if dot == -1 {
+		return "", 0, false
+	}
+	if len(fields) > 13 {
+		maxRSS = parseMemory(fields[13])
+	}
+	return fields[0][:dot], maxRSS, true
+}
+
+// parseSlurmDuration converts a sacct duration ([D-][HH:]MM:SS[.mmm], as in
+// TotalCPU) to whole seconds. nil for an empty or unrecognized value.
+func parseSlurmDuration(s string) *int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var days int64
+	if dash := strings.Index(s, "-"); dash != -1 {
+		d, err := strconv.ParseInt(s[:dash], 10, 64)
+		if err != nil || d < 0 {
+			return nil
+		}
+		days = d
+		s = s[dash+1:]
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil
+	}
+	secs, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	if err != nil || secs < 0 {
+		return nil
+	}
+	var whole []int64 // [hours,] minutes
+	for _, p := range parts[:len(parts)-1] {
+		v, err := strconv.ParseInt(p, 10, 64)
+		if err != nil || v < 0 {
+			return nil
+		}
+		whole = append(whole, v)
+	}
+	var hours, minutes int64
+	if len(whole) == 2 {
+		hours, minutes = whole[0], whole[1]
+	} else {
+		minutes = whole[0]
+	}
+	total := days*86400 + hours*3600 + minutes*60 + int64(secs+0.5)
+	return &total
 }
 
 // appendTZ returns a copy of env with any existing TZ= entry removed and
@@ -488,8 +571,9 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 			job_id, cluster, user_id, account_id, partition, qos,
 			job_state, exit_code, req_cpus, req_nodes, max_rss, node_list,
 			submit_time, start_time, end_time, wait_time_seconds, run_time_seconds,
-			core_hours, job_name, group_name, timelimit_minutes, gpu_count, gpu_hours
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+			core_hours, job_name, group_name, timelimit_minutes, gpu_count, gpu_hours,
+			tres_alloc_str, total_cpu_seconds
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
 		ON CONFLICT (job_id, cluster, submit_time) 
 		DO UPDATE SET
 			job_state = EXCLUDED.job_state,
@@ -499,7 +583,10 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 			core_hours = EXCLUDED.core_hours,
 			job_name = EXCLUDED.job_name,
 			gpu_count = EXCLUDED.gpu_count,
-			gpu_hours = EXCLUDED.gpu_hours
+			gpu_hours = EXCLUDED.gpu_hours,
+			max_rss = EXCLUDED.max_rss,
+			tres_alloc_str = EXCLUDED.tres_alloc_str,
+			total_cpu_seconds = EXCLUDED.total_cpu_seconds
 	`
 
 	for _, job := range jobs {
@@ -558,6 +645,8 @@ func (s *SacctIngestor) processJobs(ctx context.Context, jobs []SacctJob) error 
 			job.Timelimit,     // $21
 			job.GpuCount,      // $22
 			gpuHours,          // $23
+			job.AllocTRES,     // $24
+			job.TotalCPU,      // $25
 		)
 		if err != nil {
 			return fmt.Errorf("failed to upsert job %d: %w", job.JobID, err)

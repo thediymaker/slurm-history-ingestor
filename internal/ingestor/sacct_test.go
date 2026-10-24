@@ -1,9 +1,14 @@
 package ingestor
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/thediymaker/slurm-history-ingestor/internal/config"
 )
 
 func TestParseGpuCount(t *testing.T) {
@@ -143,7 +148,7 @@ func TestAppendTZ(t *testing.T) {
 	})
 }
 
-// buildSacctLine assembles a pipe-delimited sacct line from the 18 fields in
+// buildSacctLine assembles a pipe-delimited sacct line from the 19 fields in
 // sacctFormat order, so tests stay readable as the format evolves.
 func buildSacctLine(fields ...string) string {
 	return strings.Join(fields, "|")
@@ -171,6 +176,7 @@ func TestParseSacctLine(t *testing.T) {
 		"normal",                   // 15 QOS
 		"physicsgrp",               // 16 Group
 		"cpu=8,gres/gpu=4,mem=64G", // 17 AllocTRES
+		"1-02:03:04.600",           // 18 TotalCPU
 	}
 
 	t.Run("happy path", func(t *testing.T) {
@@ -198,6 +204,12 @@ func TestParseSacctLine(t *testing.T) {
 		}
 		if job.GpuCount != 4 {
 			t.Errorf("GpuCount = %d, want 4", job.GpuCount)
+		}
+		if job.AllocTRES != "cpu=8,gres/gpu=4,mem=64G" {
+			t.Errorf("AllocTRES = %q", job.AllocTRES)
+		}
+		if want := int64(86400 + 2*3600 + 3*60 + 5); job.TotalCPU == nil || *job.TotalCPU != want {
+			t.Errorf("TotalCPU = %v, want %d", job.TotalCPU, want)
 		}
 		wantStart := time.Date(2024, 1, 15, 10, 5, 0, 0, time.UTC)
 		if !job.StartTime.Equal(wantStart) {
@@ -253,9 +265,25 @@ func TestParseSacctLine(t *testing.T) {
 		}
 	})
 
+	t.Run("empty TotalCPU is nil", func(t *testing.T) {
+		f := append([]string(nil), validFields...)
+		f[18] = ""
+		job, err := s.parseSacctLine(buildSacctLine(f...))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if job.TotalCPU != nil {
+			t.Errorf("TotalCPU = %d, want nil", *job.TotalCPU)
+		}
+	})
+
 	t.Run("too few fields errors", func(t *testing.T) {
 		if _, err := s.parseSacctLine("12345|alice|physics"); err == nil {
-			t.Error("expected error for line with fewer than 18 fields")
+			t.Error("expected error for line with fewer than 19 fields")
+		}
+		// The pre-TotalCPU format had 18 fields
+		if _, err := s.parseSacctLine(buildSacctLine(validFields[:18]...)); err == nil {
+			t.Error("expected error for line without TotalCPU")
 		}
 	})
 
@@ -266,4 +294,108 @@ func TestParseSacctLine(t *testing.T) {
 			t.Error("expected error for non-numeric job ID")
 		}
 	})
+}
+
+func TestParseSlurmDuration(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"", 0, false},
+		{"00:00:00", 0, true},
+		{"05:06.789", 5*60 + 7, true}, // MM:SS.mmm, rounded
+		{"00:30.400", 30, true},
+		{"01:02:03", 3600 + 2*60 + 3, true},
+		{"1-02:03:04", 86400 + 2*3600 + 3*60 + 4, true},
+		{"12-00:00:00", 12 * 86400, true},
+		{"  00:01:00  ", 60, true},
+		{"42", 0, false},
+		{"1:2:3:4", 0, false},
+		{"x-01:00:00", 0, false},
+		{"aa:bb", 0, false},
+		{"INVALID", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := parseSlurmDuration(tt.in)
+			if !tt.ok {
+				if got != nil {
+					t.Errorf("parseSlurmDuration(%q) = %d, want nil", tt.in, *got)
+				}
+				return
+			}
+			if got == nil || *got != tt.want {
+				t.Errorf("parseSlurmDuration(%q) = %v, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSacctStep(t *testing.T) {
+	tests := []struct {
+		name       string
+		line       string
+		wantParent string
+		wantRSS    int64
+		wantOK     bool
+	}{
+		{"job line is not a step", "12345|alice|physics", "", 0, false},
+		{"batch step", "12345.batch||||COMPLETED|0:0|||||||batch|2048K|||||00:10.000", "12345", 2048 * 1024, true},
+		{"numbered step", "12345.0||||COMPLETED|0:0|||||||python|3G|||||01:00:00", "12345", 3 * 1024 * 1024 * 1024, true},
+		{"short step line", "12345.extern", "12345", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent, rss, ok := parseSacctStep(tt.line)
+			if ok != tt.wantOK || parent != tt.wantParent || rss != tt.wantRSS {
+				t.Errorf("parseSacctStep(%q) = %q, %d, %v; want %q, %d, %v",
+					tt.line, parent, rss, ok, tt.wantParent, tt.wantRSS, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestFetchJobsFoldsSteps runs fetchJobs against a stand-in sacct that prints
+// two jobs with their steps, and checks that steps aren't returned as jobs and
+// that each job gets its steps' highest MaxRSS.
+func TestFetchJobsFoldsSteps(t *testing.T) {
+	out := strings.Join([]string{
+		"100|alice|physics|cpu|COMPLETED|0:0|2024-01-15T10:00:00|2024-01-15T10:05:00|2024-01-15T11:05:00|8|1|node01|job-a||60|normal|grp|cpu=8,mem=16G,node=1|02:00:00",
+		"100.batch||||COMPLETED|0:0|||||||batch|1G|||||00:30:00",
+		"100.extern||||COMPLETED|0:0|||||||extern|0|||||00:00:00",
+		"100.0||||COMPLETED|0:0|||||||python|5G|||||01:30:00",
+		"101|bob|chem|cpu|FAILED|1:0|2024-01-15T10:00:00|2024-01-15T10:01:00|2024-01-15T10:02:00|1|1|node02|job-b||10|normal|grp|cpu=1,node=1|",
+		"101.batch||||FAILED|1:0|||||||batch|300M|||||00:00:01.200",
+	}, "\n")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "out.txt"), []byte(out+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "sacct")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat \""+filepath.Join(dir, "out.txt")+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &SacctIngestor{cfg: &config.Config{SacctPath: script, ClusterName: "test"}}
+	start := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	jobs, err := s.fetchJobs(context.Background(), start, start.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("fetchJobs: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("got %d jobs, want 2 (steps must not become jobs)", len(jobs))
+	}
+	if jobs[0].JobID != 100 || jobs[0].MaxRSS != 5*1024*1024*1024 {
+		t.Errorf("job 100: id %d MaxRSS %d, want the largest step MaxRSS (5G)", jobs[0].JobID, jobs[0].MaxRSS)
+	}
+	if jobs[0].TotalCPU == nil || *jobs[0].TotalCPU != 7200 {
+		t.Errorf("job 100: TotalCPU %v, want 7200 from the job line", jobs[0].TotalCPU)
+	}
+	if jobs[1].MaxRSS != 300*1024*1024 {
+		t.Errorf("job 101: MaxRSS %d, want 300M", jobs[1].MaxRSS)
+	}
+	if jobs[1].TotalCPU != nil {
+		t.Errorf("job 101: TotalCPU %d, want nil for an empty field", *jobs[1].TotalCPU)
+	}
 }

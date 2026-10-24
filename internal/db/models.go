@@ -54,6 +54,7 @@ type JobHistory struct {
 	GroupName        *string `json:"group_name"`
 	EligibleTime     *int64  `json:"eligible_time"`
 	TimelimitMinutes *int64  `json:"timelimit_minutes"`
+	TotalCpuSeconds  *int64  `json:"total_cpu_seconds"`
 }
 
 type Organization struct {
