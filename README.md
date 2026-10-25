@@ -101,6 +101,9 @@ All configuration is via environment variables (or `.env` file):
 | `LOOKBACK_MINUTES` | `5` | Overlap window to catch jobs delayed by slurmdbd visibility |
 | `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run |
 | `CHUNK_HOURS` | `24` | Hours per API request (for busy clusters, try 6 or 1) |
+| `CHUNK_MINUTES` | - | Minutes per request; overrides `CHUNK_HOURS` (for clusters that finish tens of thousands of jobs an hour, try 15) |
+| `CHUNK_TARGET_JOBS` | `0` | API mode: size each request to about this many finished jobs, between a minute and `CHUNK_HOURS`/`CHUNK_MINUTES`. For clusters whose job rate swings widely, e.g. `3000` |
+| `BACKFILL_PAUSE_RATIO` | `0` | While catching up, wait this many times as long as the last request took before the next one. `1` keeps slurmrestd busy at most half the time during a backfill |
 | `DEBUG` | `false` | Enable verbose logging |
 
 > **Timezone:** All timestamps are normalized to UTC in code. Setting `TZ=UTC` on the service is optional and only affects log formatting; correctness does not depend on it.

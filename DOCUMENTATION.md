@@ -153,6 +153,9 @@ Choose one of two modes:
 | `LOOKBACK_MINUTES` | `5` | Overlap window (minutes) re-scanned before the sync cursor on every sync after the first run, to absorb delayed slurmdbd visibility. Duplicates are deduped by the database `ON CONFLICT` clause. |
 | `INITIAL_SYNC_DATE` | `2024-01-01` | How far back to sync on first run, i.e. when there is no sync cursor and no job history for the cluster (YYYY-MM-DD, interpreted as UTC) |
 | `CHUNK_HOURS` | `24` | Hours per request chunk (lower = less data per request) |
+| `CHUNK_MINUTES` | unset | Minutes per request chunk; overrides `CHUNK_HOURS`. For clusters that finish tens of thousands of jobs an hour |
+| `CHUNK_TARGET_JOBS` | `0` | API mode: size each chunk to about this many finished jobs, from the count the last chunk returned: short chunks through busy stretches, long ones through quiet ones. Chunks stay between a minute and `CHUNK_HOURS`/`CHUNK_MINUTES`, which becomes the maximum |
+| `BACKFILL_PAUSE_RATIO` | `0` | After each chunk of a sync pass, wait this many times as long as the chunk took. Only a pass that's behind has more than one chunk, so this paces a backfill without slowing normal syncs; `1` keeps slurmrestd busy at most half the time |
 | `HTTP_TIMEOUT` | `120` | Seconds to wait for API response (API mode only) |
 | `DEBUG` | `false` | Enable verbose logging |
 | `TZ` | unset | Optional. The ingestor normalizes all timestamps to UTC in code; setting `TZ=UTC` on the service or container is recommended only for log clarity. |
@@ -174,7 +177,8 @@ If you experience **timeout errors** with API mode, adjust these settings:
 
 | Problem | Solution |
 |---------|----------|
-| "Timeout was reached" | Reduce `CHUNK_HOURS` to `6`, `3`, or even `1` |
+| "Timeout was reached" | Reduce `CHUNK_HOURS` to `6`, `3`, or even `1`, or set `CHUNK_MINUTES` |
+| slurmrestd slow for everyone during a backfill | Set `CHUNK_TARGET_JOBS` (e.g. `3000`), `CHUNK_MINUTES` as the longest chunk (e.g. `30`) and `BACKFILL_PAUSE_RATIO` (e.g. `1`). slurmrestd answers no other request while it builds a large job list |
 | Slow network | Increase `HTTP_TIMEOUT` to `300` or higher |
 | Very busy cluster | Switch to `INGEST_MODE=sacct` (recommended) |
 

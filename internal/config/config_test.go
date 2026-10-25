@@ -106,3 +106,39 @@ func TestGetEnvDate(t *testing.T) {
 		}
 	})
 }
+
+func TestChunk(t *testing.T) {
+	tests := []struct {
+		name    string
+		hours   int
+		minutes int
+		want    time.Duration
+	}{
+		{"hours only", 24, 0, 24 * time.Hour},
+		{"minutes override hours", 1, 15, 15 * time.Minute},
+		{"zero minutes keeps hours", 6, 0, 6 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Config{ChunkHours: tt.hours, ChunkMinutes: tt.minutes}
+			if got := c.Chunk(); got != tt.want {
+				t.Errorf("Chunk() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetEnvFloat(t *testing.T) {
+	t.Setenv("TEST_FLOAT", "1.5")
+	if got := getEnvFloat("TEST_FLOAT", 0); got != 1.5 {
+		t.Errorf("getEnvFloat = %v, want 1.5", got)
+	}
+	t.Setenv("TEST_FLOAT", "-1")
+	if got := getEnvFloat("TEST_FLOAT", 0); got != 0 {
+		t.Errorf("getEnvFloat(negative) = %v, want fallback 0", got)
+	}
+	t.Setenv("TEST_FLOAT", "abc")
+	if got := getEnvFloat("TEST_FLOAT", 2); got != 2 {
+		t.Errorf("getEnvFloat(invalid) = %v, want fallback 2", got)
+	}
+}

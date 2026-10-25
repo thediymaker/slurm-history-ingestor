@@ -18,12 +18,15 @@ type Config struct {
 	ClusterName     string
 	SyncInterval    int // Seconds
 	InitialSyncDate time.Time
-	ChunkHours      int    // Hours per API request chunk
-	HTTPTimeout     int    // Seconds for HTTP requests
-	IngestMode      string // "api" or "sacct"
-	SacctPath       string // Path to sacct binary
-	LookbackMinutes int    // Overlap window (minutes) to catch jobs delayed by slurmdbd visibility
-	SlurmAPITZ      string // IANA timezone slurmrestd interprets zone-less timestamps in (e.g. "UTC", "America/Phoenix"). Default: UTC.
+	ChunkHours      int     // Hours per API request chunk
+	ChunkMinutes    int     // Minutes per request chunk; overrides ChunkHours when > 0
+	BackfillPause   float64 // After each window of a pass that's behind, wait this many times as long as the window took
+	ChunkTargetJobs int     // API mode: size each window to about this many finished jobs (0 = fixed windows)
+	HTTPTimeout     int     // Seconds for HTTP requests
+	IngestMode      string  // "api" or "sacct"
+	SacctPath       string  // Path to sacct binary
+	LookbackMinutes int     // Overlap window (minutes) to catch jobs delayed by slurmdbd visibility
+	SlurmAPITZ      string  // IANA timezone slurmrestd interprets zone-less timestamps in (e.g. "UTC", "America/Phoenix"). Default: UTC.
 	Debug           bool
 }
 
@@ -43,6 +46,9 @@ func Load() *Config {
 		SyncInterval:    getEnvInt("SYNC_INTERVAL", 60),
 		InitialSyncDate: getEnvDate("INITIAL_SYNC_DATE", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
 		ChunkHours:      getEnvInt("CHUNK_HOURS", 24),
+		ChunkMinutes:    getEnvInt("CHUNK_MINUTES", 0),
+		BackfillPause:   getEnvFloat("BACKFILL_PAUSE_RATIO", 0),
+		ChunkTargetJobs: getEnvInt("CHUNK_TARGET_JOBS", 0),
 		HTTPTimeout:     getEnvInt("HTTP_TIMEOUT", 120),
 		IngestMode:      getEnv("INGEST_MODE", "api"),
 		SacctPath:       getEnv("SACCT_PATH", "sacct"),
@@ -50,6 +56,16 @@ func Load() *Config {
 		SlurmAPITZ:      getEnv("SLURM_API_TZ", "UTC"),
 		Debug:           getEnvBool("DEBUG", false),
 	}
+}
+
+// Chunk is the time span of one request: CHUNK_MINUTES when set, else
+// CHUNK_HOURS. Busy clusters can finish tens of thousands of jobs in an hour,
+// which is a very large slurmrestd response.
+func (c *Config) Chunk() time.Duration {
+	if c.ChunkMinutes > 0 {
+		return time.Duration(c.ChunkMinutes) * time.Minute
+	}
+	return time.Duration(c.ChunkHours) * time.Hour
 }
 
 func getEnv(key, fallback string) string {
@@ -63,6 +79,15 @@ func getEnvInt(key string, fallback int) int {
 	if value, ok := os.LookupEnv(key); ok {
 		if i, err := strconv.Atoi(value); err == nil {
 			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if value, ok := os.LookupEnv(key); ok {
+		if f, err := strconv.ParseFloat(value, 64); err == nil && f >= 0 {
+			return f
 		}
 	}
 	return fallback

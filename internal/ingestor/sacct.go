@@ -102,8 +102,8 @@ type SacctJob struct {
 // Run starts the sacct-based sync loop
 func (s *SacctIngestor) Run(ctx context.Context) error {
 	log.Printf("Starting Slurm History Ingestor (SACCT mode) for cluster: %s", s.cfg.ClusterName)
-	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %dh",
-		s.cfg.SyncInterval, s.cfg.LookbackMinutes, s.cfg.ChunkHours)
+	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %s, Backfill pause ratio: %g",
+		s.cfg.SyncInterval, s.cfg.LookbackMinutes, s.cfg.Chunk(), s.cfg.BackfillPause)
 	hostTZ := os.Getenv("TZ")
 	if hostTZ == "" {
 		hostTZ = "<unset, host default>"
@@ -147,9 +147,16 @@ func (s *SacctIngestor) sync(ctx context.Context) error {
 	}
 
 	endTime := time.Now().UTC()
-	chunkDuration := time.Duration(s.cfg.ChunkHours) * time.Hour
+	chunkDuration := s.cfg.Chunk()
 
+	var windowStarted time.Time
 	for currentStart := startTime; currentStart.Before(endTime); currentStart = currentStart.Add(chunkDuration) {
+		if !currentStart.Equal(startTime) {
+			if err := pauseBetweenWindows(ctx, s.cfg, time.Since(windowStarted)); err != nil {
+				return err
+			}
+		}
+		windowStarted = time.Now()
 		currentEnd := currentStart.Add(chunkDuration)
 		if currentEnd.After(endTime) {
 			currentEnd = endTime

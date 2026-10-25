@@ -86,8 +86,8 @@ func (i *Ingestor) Run(ctx context.Context) error {
 	if apiVersion == "" {
 		apiVersion = "detect"
 	}
-	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %dh, API: %s",
-		i.cfg.SyncInterval, i.cfg.LookbackMinutes, i.cfg.ChunkHours, apiVersion)
+	log.Printf("Sync interval: %ds, Lookback: %dm, Chunk: %s (target %d jobs), Backfill pause ratio: %g, API: %s",
+		i.cfg.SyncInterval, i.cfg.LookbackMinutes, i.cfg.Chunk(), i.cfg.ChunkTargetJobs, i.cfg.BackfillPause, apiVersion)
 
 	apiLoc, locErr := time.LoadLocation(i.cfg.SlurmAPITZ)
 	if locErr != nil {
@@ -144,11 +144,25 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 
 	endTime := time.Now().UTC().Unix()
 
-	// Chunk by configured hours (default: 24) to avoid API timeouts
-	chunkSize := int64(i.cfg.ChunkHours * 3600)
+	// Chunk by CHUNK_MINUTES or CHUNK_HOURS (default: 24 hours) to avoid API
+	// timeouts. With CHUNK_TARGET_JOBS each window is sized from the last one
+	// instead, starting small in case the pass begins in a busy stretch.
+	maxChunk := int64(i.cfg.Chunk() / time.Second)
+	chunkSize := maxChunk
+	if i.cfg.ChunkTargetJobs > 0 {
+		chunkSize = min(maxChunk, 300)
+	}
 
-	for currentStart := startTime; currentStart < endTime; currentStart += chunkSize {
-		currentEnd := currentStart + chunkSize
+	var windowStarted time.Time
+	var currentEnd int64
+	for currentStart := startTime; currentStart < endTime; currentStart = currentEnd {
+		if currentStart != startTime {
+			if err := pauseBetweenWindows(ctx, i.cfg, time.Since(windowStarted)); err != nil {
+				return err
+			}
+		}
+		windowStarted = time.Now()
+		currentEnd = currentStart + chunkSize
 		if currentEnd > endTime {
 			currentEnd = endTime
 		}
@@ -181,6 +195,7 @@ func (i *Ingestor) syncJobs(ctx context.Context) error {
 			}
 			return fmt.Errorf("slurm api error after %d attempts: %w", attempt, err)
 		}
+		chunkSize = nextChunkSeconds(currentEnd-currentStart, maxChunk, len(jobs), i.cfg.ChunkTargetJobs)
 
 		if len(jobs) == 0 {
 			if i.cfg.Debug {
@@ -535,6 +550,42 @@ func totalCPUSeconds(job RawJob) pgtype.Int8 {
 		secs += (*us + 500_000) / 1_000_000
 	}
 	return pgtype.Int8{Int64: secs, Valid: true}
+}
+
+// nextChunkSeconds sizes the next API window from how many jobs the last one
+// (cur seconds long) returned, aiming for about target jobs: busy stretches get
+// short windows, each a small slurmrestd response, and quiet stretches long
+// ones, so a backfill needs fewer requests. The window stays between a minute
+// and maxChunk, and grows at most fourfold at a time so a quiet stretch
+// doesn't run straight into the middle of a busy one. target 0 keeps windows
+// at maxChunk.
+func nextChunkSeconds(cur, maxChunk int64, jobs, target int) int64 {
+	if target <= 0 {
+		return maxChunk
+	}
+	next := cur * 4
+	if jobs > 0 {
+		next = min(next, cur*int64(target)/int64(jobs))
+	}
+	return max(min(next, maxChunk), 60)
+}
+
+// pauseBetweenWindows waits BACKFILL_PAUSE_RATIO times as long as the last
+// window took, before the next window of the same sync pass. Only a pass that
+// is behind has more than one window, so this paces a backfill: a ratio of 1
+// keeps slurmrestd and slurmdbd busy at most half the time during heavy
+// stretches, and costs almost nothing where windows are quick.
+func pauseBetweenWindows(ctx context.Context, cfg *config.Config, lastWindow time.Duration) error {
+	pause := time.Duration(cfg.BackfillPause * float64(lastWindow))
+	if pause <= 0 {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(pause):
+		return nil
+	}
 }
 
 // The job states the ingestor records. Every other state is still running or

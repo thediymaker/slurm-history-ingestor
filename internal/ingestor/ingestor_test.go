@@ -113,3 +113,26 @@ func TestTotalCPUSeconds(t *testing.T) {
 		})
 	}
 }
+
+func TestNextChunkSeconds(t *testing.T) {
+	tests := []struct {
+		name          string
+		cur, maxChunk int64
+		jobs, target  int
+		want          int64
+	}{
+		{"no target keeps max", 600, 3600, 50000, 0, 3600},
+		{"busy window shrinks to target", 600, 3600, 16000, 4000, 150},
+		{"never below a minute", 300, 3600, 95000, 1000, 60},
+		{"quiet window grows at most fourfold", 300, 3600, 10, 4000, 1200},
+		{"empty window grows fourfold", 600, 3600, 0, 4000, 2400},
+		{"growth capped at max", 1800, 3600, 0, 4000, 3600},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nextChunkSeconds(tt.cur, tt.maxChunk, tt.jobs, tt.target); got != tt.want {
+				t.Errorf("nextChunkSeconds(%d, %d, %d, %d) = %d, want %d", tt.cur, tt.maxChunk, tt.jobs, tt.target, got, tt.want)
+			}
+		})
+	}
+}
