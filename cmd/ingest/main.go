@@ -25,7 +25,17 @@ func main() {
 	log.Printf("Starting Slurm Ingestor for cluster: %s (mode: %s)", cfg.ClusterName, cfg.IngestMode)
 
 	// 2. Connect to DB
-	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Invalid DATABASE_URL: %v", err)
+	}
+	// The ingestor writes from one goroutine, so a few connections are plenty.
+	// pgx defaults to one per CPU, which on a large node (or in a container
+	// that sees all of its CPUs) can exceed the database user's limit.
+	if !strings.Contains(cfg.DatabaseURL, "pool_max_conns") {
+		poolCfg.MaxConns = 4
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		log.Fatalf("Unable to connect to database: %v", err)
 	}
