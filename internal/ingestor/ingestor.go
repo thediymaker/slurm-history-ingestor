@@ -31,6 +31,10 @@ type Ingestor struct {
 	// so no locking is needed.
 	userCache    map[string]int32
 	accountCache map[string]int32
+
+	// Set when slurmrestd rejects the state filter on /slurmdb/jobs (older
+	// API versions may not take it); windows are then fetched unfiltered.
+	noStateFilter bool
 }
 
 func New(cfg *config.Config, pool *pgxpool.Pool) (*Ingestor, error) {
@@ -533,12 +537,17 @@ func totalCPUSeconds(job RawJob) pgtype.Int8 {
 	return pgtype.Int8{Int64: secs, Valid: true}
 }
 
+// The job states the ingestor records. Every other state is still running or
+// waiting and is picked up once it reaches one of these.
+var finalStates = []string{"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE", "OUT_OF_MEMORY"}
+
 func isFinalState(state string) bool {
 	// Handle states with flags like CANCELLED+
 	cleanState := strings.TrimSuffix(state, "+")
-	switch cleanState {
-	case "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE", "OUT_OF_MEMORY":
-		return true
+	for _, s := range finalStates {
+		if cleanState == s {
+			return true
+		}
 	}
 	return false
 }
@@ -646,6 +655,17 @@ func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob
 	endStr := time.Unix(end, 0).In(apiLoc).Format("2006-01-02T15:04:05")
 	q.Set("start_time", startStr)
 	q.Set("end_time", endStr)
+	// Without a state, slurmdbd returns every job that was pending or running
+	// at any point in the window, so on a busy cluster most of each response
+	// is jobs that end later and get skipped. With terminal states it returns
+	// the jobs that ended in the window. slurmrestd takes one state per
+	// parameter; a comma-separated list is rejected.
+	filtered := !i.noStateFilter
+	if filtered {
+		for _, s := range finalStates {
+			q.Add("state", s)
+		}
+	}
 	u.RawQuery = q.Encode()
 
 	if i.cfg.Debug {
@@ -680,6 +700,15 @@ func (i *Ingestor) fetchJobsRaw(ctx context.Context, start, end int64) ([]RawJob
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if filtered && strings.Contains(string(body), "state") {
+			preview := string(body)
+			if len(preview) > 300 {
+				preview = preview[:300]
+			}
+			log.Printf("slurmrestd rejected the job state filter (status %d: %s); fetching every job in each window from now on", resp.StatusCode, preview)
+			i.noStateFilter = true
+			return i.fetchJobsRaw(ctx, start, end)
+		}
 		return nil, fmt.Errorf("slurm api returned status %d: %s", resp.StatusCode, string(body))
 	}
 
