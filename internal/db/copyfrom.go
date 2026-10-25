@@ -127,7 +127,8 @@ func (q *Queries) BatchInsertHistory(ctx context.Context, arg []BatchInsertHisto
             timelimit_minutes = EXCLUDED.timelimit_minutes,
             gpu_count = EXCLUDED.gpu_count,
             gpu_hours = EXCLUDED.gpu_hours,
-            total_cpu_seconds = EXCLUDED.total_cpu_seconds
+            total_cpu_seconds = EXCLUDED.total_cpu_seconds,
+            max_rss = EXCLUDED.max_rss
     `
 	_, err = q.db.Exec(ctx, query)
 	if err != nil {

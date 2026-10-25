@@ -486,6 +486,7 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 			GpuCount:         pgtype.Int4{Int32: gpuCount, Valid: true},
 			GpuHours:         numericGpuHours,
 			TotalCpuSeconds:  totalCPUSeconds(job),
+			MaxRss:           maxRSS(job),
 		})
 	}
 
@@ -539,17 +540,51 @@ func isRetryableErr(err error) bool {
 		strings.Contains(errStr, "timeout")
 }
 
-// totalCPUSeconds is the CPU time the job used, rounded to the second. Unset
-// (NULL) when slurmdbd didn't report it.
+// totalCPUSeconds is the CPU time the job used, rounded to the second: the sum
+// over its steps, as sacct's TotalCPU, or the job's own figure when the record
+// has no steps. Unset (NULL) when slurmdbd didn't report it.
 func totalCPUSeconds(job RawJob) pgtype.Int8 {
-	if job.Time == nil || job.Time.Total == nil || job.Time.Total.Seconds == nil {
+	var total int64
+	found := false
+	if len(job.Steps) > 0 {
+		for _, step := range job.Steps {
+			if step.Time == nil {
+				continue
+			}
+			if us, ok := step.Time.Total.microseconds(); ok {
+				total += us
+				found = true
+			}
+		}
+	} else if job.Time != nil {
+		total, found = job.Time.Total.microseconds()
+	}
+	if !found {
 		return pgtype.Int8{}
 	}
-	secs := *job.Time.Total.Seconds
-	if us := job.Time.Total.Microseconds; us != nil {
-		secs += (*us + 500_000) / 1_000_000
+	return pgtype.Int8{Int64: (total + 500_000) / 1_000_000, Valid: true}
+}
+
+// maxRSS is the job's peak memory in bytes: the highest per-task peak over its
+// steps, as sacct mode records it. Unset when no step reported memory.
+func maxRSS(job RawJob) pgtype.Int8 {
+	var peak int64
+	found := false
+	for _, step := range job.Steps {
+		if step.Tres == nil || step.Tres.Requested == nil {
+			continue
+		}
+		for _, m := range step.Tres.Requested.Max {
+			if m.Type == "mem" {
+				found = true
+				peak = max(peak, m.Count)
+			}
+		}
 	}
-	return pgtype.Int8{Int64: secs, Valid: true}
+	if !found {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: peak, Valid: true}
 }
 
 // nextChunkSeconds sizes the next API window from how many jobs the last one
@@ -605,6 +640,39 @@ func isFinalState(state string) bool {
 
 // --- Raw Client Implementation ---
 
+type rawDuration struct {
+	Seconds      *int64 `json:"seconds"`
+	Microseconds *int64 `json:"microseconds"`
+}
+
+// microseconds is the duration in microseconds; ok is false when unset
+func (d *rawDuration) microseconds() (us int64, ok bool) {
+	if d == nil || d.Seconds == nil {
+		return 0, false
+	}
+	us = *d.Seconds * 1_000_000
+	if d.Microseconds != nil {
+		us += *d.Microseconds
+	}
+	return us, true
+}
+
+// A job step: CPU time it used and its highest per-task usage (tres.requested.max,
+// where mem is peak RSS in bytes)
+type RawStep struct {
+	Time *struct {
+		Total *rawDuration `json:"total"`
+	} `json:"time"`
+	Tres *struct {
+		Requested *struct {
+			Max []struct {
+				Type  string `json:"type"`
+				Count int64  `json:"count"`
+			} `json:"max"`
+		} `json:"requested"`
+	} `json:"tres"`
+}
+
 type RawJobResponse struct {
 	Jobs []RawJob `json:"jobs"`
 }
@@ -648,12 +716,11 @@ type RawJob struct {
 		Limit      *struct {
 			Number *int64 `json:"number"`
 		} `json:"limit"`
-		// User + system CPU time, summed over the job's steps
-		Total *struct {
-			Seconds      *int64 `json:"seconds"`
-			Microseconds *int64 `json:"microseconds"`
-		} `json:"total"`
+		// User + system CPU time. slurmdbd leaves the job's own figure at 0
+		// and keeps the real ones on its steps
+		Total *rawDuration `json:"total"`
 	} `json:"time"`
+	Steps    []RawStep `json:"steps"`
 	Required *struct {
 		CPUs         *int32 `json:"CPUs"`
 		CpusLower    *int32 `json:"cpus"`
