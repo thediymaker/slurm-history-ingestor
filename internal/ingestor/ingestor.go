@@ -541,8 +541,9 @@ func isRetryableErr(err error) bool {
 }
 
 // totalCPUSeconds is the CPU time the job used, rounded to the second: the sum
-// over its steps, as sacct's TotalCPU, or the job's own figure when the record
-// has no steps. Unset (NULL) when slurmdbd didn't report it.
+// over its steps, as sacct's TotalCPU. Without steps (slurmdbd purges them
+// sooner than jobs, see PurgeStepAfter) only a nonzero job figure counts,
+// since slurmdbd leaves the job's own at 0. Unset (NULL) when unknown.
 func totalCPUSeconds(job RawJob) pgtype.Int8 {
 	var total int64
 	found := false
@@ -558,6 +559,7 @@ func totalCPUSeconds(job RawJob) pgtype.Int8 {
 		}
 	} else if job.Time != nil {
 		total, found = job.Time.Total.microseconds()
+		found = found && total > 0
 	}
 	if !found {
 		return pgtype.Int8{}

@@ -96,7 +96,9 @@ func TestTotalCPUSeconds(t *testing.T) {
 		{"seconds and microseconds", `{"time":{"total":{"seconds":3725,"microseconds":600000}}}`, 3726, true},
 		{"rounds down under half a second", `{"time":{"total":{"seconds":10,"microseconds":499999}}}`, 10, true},
 		{"no microseconds", `{"time":{"total":{"seconds":42}}}`, 42, true},
-		{"zero is a value", `{"time":{"total":{"seconds":0,"microseconds":0}}}`, 0, true},
+		// slurmdbd leaves the job's own figure at 0; without steps that's unknown
+		{"zero without steps is unknown", `{"time":{"total":{"seconds":0,"microseconds":0}}}`, 0, false},
+		{"zero over steps is a value", `{"steps":[{"time":{"total":{"seconds":0,"microseconds":0}}}]}`, 0, true},
 		{"no total", `{"time":{"start":1700000000}}`, 0, false},
 		{"no time", `{}`, 0, false},
 		// slurmdbd reports 0 for the job and the real time on its steps;

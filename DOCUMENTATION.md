@@ -267,7 +267,7 @@ Two columns measure what the job actually used, for the dashboard's efficiency r
 
 | Column | From | Notes |
 |--------|------|-------|
-| `total_cpu_seconds` | sacct `TotalCPU`, or in API mode the sum of the job's steps' `time.total` (the job's own `time.total` is 0 in slurmdbd records) | User plus system CPU time summed over the job's steps, rounded to the second. CPU efficiency is `total_cpu_seconds / (run_time_seconds * req_cpus)`. NULL for jobs ingested before migration `005_add_total_cpu.sql`; 0 for jobs ingested in API mode before 1.1.4. |
+| `total_cpu_seconds` | sacct `TotalCPU`, or in API mode the sum of the job's steps' `time.total` (the job's own `time.total` is 0 in slurmdbd records) | User plus system CPU time summed over the job's steps, rounded to the second. CPU efficiency is `total_cpu_seconds / (run_time_seconds * req_cpus)`. NULL for jobs ingested before migration `005_add_total_cpu.sql`; NULL in API mode for jobs whose steps slurmdbd had already purged (`PurgeStepAfter`, often shorter than `PurgeJobAfter`); 0 for jobs ingested in API mode before 1.1.4. |
 | `max_rss` | sacct `MaxRSS`, or in API mode the steps' `tres.requested.max` memory | Bytes; the highest per-task peak of the job's steps. NULL for jobs ingested in API mode before 1.1.4. |
 
 In sacct mode the ingestor reads job steps as well as allocations (it no longer passes `--allocations`, with which sacct skips the steps those two figures come from). Steps are folded into their job and aren't stored as rows of their own. It also stores `AllocTRES` in `tres_alloc_str`.
