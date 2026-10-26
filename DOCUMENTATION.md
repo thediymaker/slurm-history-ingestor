@@ -270,6 +270,14 @@ Two columns measure what the job actually used, for the dashboard's efficiency r
 | `total_cpu_seconds` | sacct `TotalCPU`, or in API mode the sum of the job's steps' `time.total` (the job's own `time.total` is 0 in slurmdbd records) | User plus system CPU time summed over the job's steps, rounded to the second. CPU efficiency is `total_cpu_seconds / (run_time_seconds * req_cpus)`. NULL for jobs ingested before migration `005_add_total_cpu.sql`; NULL in API mode for jobs whose steps slurmdbd had already purged (`PurgeStepAfter`, often shorter than `PurgeJobAfter`); 0 for jobs ingested in API mode before 1.1.4. |
 | `max_rss` | sacct `MaxRSS`, or in API mode the steps' `tres.requested.max` memory | Bytes; the highest per-task peak of the job's steps. NULL for jobs ingested in API mode before 1.1.4. |
 
+Allocations are what the job held, the same in both modes:
+
+| Column | From | Notes |
+|--------|------|-------|
+| `req_cpus`, `core_hours` | sacct `AllocCPUS`, or in API mode the `cpu` entry of the job's allocated TRES | CPUs held, which can be more than were asked for (whole-node or exclusive jobs). `core_hours` is `req_cpus * run_time_seconds / 3600`. Jobs ingested in API mode before 1.1.5 have the CPUs asked for. |
+| `gpu_count`, `gpu_hours` | The `gres/gpu` entry of the allocated TRES | Slurm lists GPUs once as `gres/gpu` and again by model (`gres/gpu:a100`); the generic entry counts, else the sum of the typed ones. Jobs ingested in API mode before 1.1.5 count both. |
+| `tres_alloc_str`, `tres_req_str` | sacct `AllocTRES`, or in API mode `tres.allocated` and `tres.requested` | Slurm's format: `cpu=8,mem=81920,node=1,gres/gpu=1,gres/gpu:h100=1`. Before 1.1.5, API mode wrote `cpu:=8` and `gres:gpu:h100=1`. |
+
 In sacct mode the ingestor reads job steps as well as allocations (it no longer passes `--allocations`, with which sacct skips the steps those two figures come from). Steps are folded into their job and aren't stored as rows of their own. It also stores `AllocTRES` in `tres_alloc_str`.
 
 ---

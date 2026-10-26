@@ -324,14 +324,7 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 			continue
 		}
 
-		cpusReq := int32(0)
-		if job.Required != nil {
-			if job.Required.CPUs != nil {
-				cpusReq = *job.Required.CPUs
-			} else if job.Required.CpusLower != nil {
-				cpusReq = *job.Required.CpusLower
-			}
-		}
+		cpusReq := allocatedCPUs(job)
 
 		coreHours := (float64(runTime) * float64(cpusReq)) / 3600.0
 
@@ -386,44 +379,12 @@ func (i *Ingestor) processBatch(ctx context.Context, jobs []RawJob, filterBefore
 		}
 
 		tresAlloc := ""
-		var gpuCount int32 = 0
-		if job.Tres != nil && len(job.Tres.Allocated) > 0 {
-			var parts []string
-			for _, t := range job.Tres.Allocated {
-				label := t.Type
-				if t.Name != nil {
-					label = fmt.Sprintf("%s:%s", t.Type, *t.Name)
-				}
-				parts = append(parts, fmt.Sprintf("%s=%d", label, t.Count))
-
-				// Extract GPU count. Slurm REST may report GPUs as either
-				// type="gres", name="gpu" (or "gpu:<model>") or type="gres/gpu".
-				typeLower := strings.ToLower(t.Type)
-				nameLower := ""
-				if t.Name != nil {
-					nameLower = strings.ToLower(*t.Name)
-				}
-				if typeLower == "gres/gpu" || strings.HasPrefix(typeLower, "gres/gpu:") ||
-					(typeLower == "gres" && (nameLower == "gpu" || strings.HasPrefix(nameLower, "gpu:"))) ||
-					typeLower == "gpu" {
-					gpuCount += int32(t.Count)
-				}
-			}
-			tresAlloc = strings.Join(parts, ",")
-		}
-
 		tresReq := ""
-		if job.Tres != nil && len(job.Tres.Requested) > 0 {
-			var parts []string
-			for _, t := range job.Tres.Requested {
-				label := t.Type
-				if t.Name != nil {
-					label = fmt.Sprintf("%s:%s", t.Type, *t.Name)
-				}
-				parts = append(parts, fmt.Sprintf("%s=%d", label, t.Count))
-			}
-			tresReq = strings.Join(parts, ",")
+		if job.Tres != nil {
+			tresAlloc = tresString(job.Tres.Allocated)
+			tresReq = tresString(job.Tres.Requested)
 		}
+		gpuCount := allocatedGPUs(job)
 
 		groupName := ""
 		if job.Group != nil {
@@ -589,6 +550,62 @@ func maxRSS(job RawJob) pgtype.Int8 {
 	return pgtype.Int8{Int64: peak, Valid: true}
 }
 
+// tresString lists resources as sacct's AllocTRES and ReqTRES do:
+// "cpu=8,mem=81920,node=1,gres/gpu=1,gres/gpu:h100=1"
+func tresString(tres []RawTres) string {
+	parts := make([]string, 0, len(tres))
+	for _, t := range tres {
+		parts = append(parts, fmt.Sprintf("%s=%d", t.label(), t.Count))
+	}
+	return strings.Join(parts, ",")
+}
+
+// allocatedCPUs is the CPUs the job held, as sacct's AllocCPUS: the cpu entry
+// of its allocated TRES. A whole-node or exclusive job holds more than it
+// asked for. Without one, the CPUs it asked for.
+func allocatedCPUs(job RawJob) int32 {
+	if job.Tres != nil {
+		for _, t := range job.Tres.Allocated {
+			if t.Type == "cpu" {
+				return int32(t.Count)
+			}
+		}
+	}
+	if job.Required != nil {
+		if job.Required.CPUs != nil {
+			return *job.Required.CPUs
+		}
+		if job.Required.CpusLower != nil {
+			return *job.Required.CpusLower
+		}
+	}
+	return 0
+}
+
+// allocatedGPUs is the GPUs the job held. Slurm lists them once as gres/gpu
+// and again by model (gres/gpu:a100), so the generic entry counts when there
+// is one, else the sum of the typed ones.
+func allocatedGPUs(job RawJob) int32 {
+	if job.Tres == nil {
+		return 0
+	}
+	var generic, typed int64
+	hasGeneric := false
+	for _, t := range job.Tres.Allocated {
+		switch label := strings.ToLower(t.label()); {
+		case label == "gres/gpu" || label == "gpu":
+			generic += t.Count
+			hasGeneric = true
+		case strings.HasPrefix(label, "gres/gpu:"):
+			typed += t.Count
+		}
+	}
+	if hasGeneric {
+		return int32(generic)
+	}
+	return int32(typed)
+}
+
 // nextChunkSeconds sizes the next API window from how many jobs the last one
 // (cur seconds long) returned, aiming for about target jobs: busy stretches get
 // short windows, each a small slurmrestd response, and quiet stretches long
@@ -675,6 +692,23 @@ type RawStep struct {
 	} `json:"tres"`
 }
 
+// One trackable resource: type "cpu", "mem" (MB), "node", or type "gres" with
+// a name such as "gpu" or "gpu:a100"
+type RawTres struct {
+	Type  string  `json:"type"`
+	Name  *string `json:"name"`
+	Count int64   `json:"count"`
+}
+
+// label is the resource as Slurm prints it: "cpu", or "gres/gpu:a100" when it
+// has a name
+func (t RawTres) label() string {
+	if t.Name == nil || *t.Name == "" {
+		return t.Type
+	}
+	return t.Type + "/" + *t.Name
+}
+
 type RawJobResponse struct {
 	Jobs []RawJob `json:"jobs"`
 }
@@ -696,16 +730,8 @@ type RawJob struct {
 		} `json:"task_id"`
 	} `json:"array"`
 	Tres *struct {
-		Allocated []struct {
-			Type  string  `json:"type"`
-			Name  *string `json:"name"`
-			Count int64   `json:"count"`
-		} `json:"allocated"`
-		Requested []struct {
-			Type  string  `json:"type"`
-			Name  *string `json:"name"`
-			Count int64   `json:"count"`
-		} `json:"requested"`
+		Allocated []RawTres `json:"allocated"`
+		Requested []RawTres `json:"requested"`
 	} `json:"tres"`
 	State *struct {
 		Current []string `json:"current"`

@@ -173,3 +173,47 @@ func TestNextChunkSeconds(t *testing.T) {
 		})
 	}
 }
+
+func TestAllocatedTres(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		cpus    int32
+		gpus    int32
+		tresStr string
+	}{
+		// slurmrestd names untyped resources "" and lists GPUs both ways
+		{"generic and typed GPUs", `{"required":{"CPUs":4},"tres":{"allocated":[
+			{"type":"cpu","name":"","count":8},{"type":"mem","name":"","count":81920},
+			{"type":"node","name":"","count":1},{"type":"gres","name":"gpu","count":1},
+			{"type":"gres","name":"gpu:h100","count":1}]}}`,
+			8, 1, "cpu=8,mem=81920,node=1,gres/gpu=1,gres/gpu:h100=1"},
+		{"generic GPUs only", `{"tres":{"allocated":[{"type":"cpu","count":32},{"type":"gres","name":"gpu","count":4}]}}`,
+			32, 4, "cpu=32,gres/gpu=4"},
+		{"typed GPUs only", `{"tres":{"allocated":[{"type":"gres","name":"gpu:a100","count":2},{"type":"gres","name":"gpu:a30","count":1}]}}`,
+			0, 3, "gres/gpu:a100=2,gres/gpu:a30=1"},
+		{"no allocation falls back to the request", `{"required":{"CPUs":4}}`, 4, 0, ""},
+		{"lower CPU bound", `{"required":{"cpus":2}}`, 2, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var job RawJob
+			if err := json.Unmarshal([]byte(tt.json), &job); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := allocatedCPUs(job); got != tt.cpus {
+				t.Errorf("allocatedCPUs = %d, want %d", got, tt.cpus)
+			}
+			if got := allocatedGPUs(job); got != tt.gpus {
+				t.Errorf("allocatedGPUs = %d, want %d", got, tt.gpus)
+			}
+			got := ""
+			if job.Tres != nil {
+				got = tresString(job.Tres.Allocated)
+			}
+			if got != tt.tresStr {
+				t.Errorf("tresString = %q, want %q", got, tt.tresStr)
+			}
+		})
+	}
+}
